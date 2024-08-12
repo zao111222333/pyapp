@@ -1,118 +1,52 @@
-use pyo3::prelude::*;
-use rustyline::{config::Configurer,error::ReadlineError,Cmd, DefaultEditor, EventHandler, KeyCode, KeyEvent, Modifiers};
-use thiserror::Error;
+use std::path::PathBuf;
 
-#[pyfunction]
-fn add_one(x: i64) -> i64 {
-    x + 1
+mod app;
+mod py;
+
+const PROMPT1: &str = "pyapp > ";
+const PROMPT2: &str = " .... > ";
+const TERMINATE_N: u8 = 2;
+
+use clap::{builder::styling::Styles, Parser};
+
+#[derive(Parser, Debug)]
+#[command(version, about = "An example application", long_about = None)]
+#[command(styles = CLAP_STYLING)]
+struct Args {
+    /// Execute file with arguments. If not specify, start interactive shell mode
+    #[arg(value_name = "file arg1 arg2..", trailing_var_arg = true)]
+    file_args: Vec<String>,
+    /// Execute file in quiet mode
+    #[arg(short = 'q', long = "quiet", default_value_t = false)]
+    quiet_exec: bool,
 }
 
-static mut EXIT_CODE: Option<u8> = None;
+pub const CLAP_STYLING: Styles = Styles::styled();
 
-#[pyfunction]
-fn exit(code: u8) {
-    unsafe {
-        EXIT_CODE = Some(code);
-    }
+#[derive(Debug)]
+enum ExecMode {
+    /// Start in interactive shell mode
+    InteractiveShell,
+    /// Execute a file with arguments
+    ExecFile { quiet: bool, path: PathBuf, args: Vec<String> },
 }
 
-#[pymodule]
-fn foo(foo_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    foo_module.add_function(wrap_pyfunction!(add_one, foo_module)?)?;
-    foo_module.add_function(wrap_pyfunction!(exit, foo_module)?)?;
-    Ok(())
-}
-
-#[derive(Error, Debug)]
-enum ExitCode {
-    #[error("data store disconnected")]
-    Exit(u8),
-    #[error("data store disconnected")]
-    PyResult(#[from] PyErr),
-    #[error("data store disconnected")]
-    Readline(#[from] ReadlineError),
-}
-
-impl std::process::Termination for ExitCode {
-    fn report(self) -> std::process::ExitCode {
-        match self {
-            ExitCode::Exit(code) => {
-                println!("exit");
-                code.into()
-            },
-            ExitCode::PyResult(e) => {
-                println!("{}",e);
-                1.into()
-            },
-            ExitCode::Readline(e) => {
-                println!("{}",e);
-                1.into()
-            },
+impl From<Args> for ExecMode {
+    #[inline]
+    fn from(mut value: Args) -> Self {
+        if value.file_args.is_empty() {
+            ExecMode::InteractiveShell
+        } else {
+            ExecMode::ExecFile {
+                quiet: value.quiet_exec,
+                path: value.file_args.remove(0).into(),
+                args: value.file_args,
+            }
         }
     }
 }
 
-fn is_incomplete_code(compile_command: &Bound<PyAny>, code: &str) -> PyResult<bool> {
-    let result = compile_command.call1((code, "<input>", "single"))?;
-    Ok(result.is_none())
-}
-
-fn run_shell() -> Result<(), ExitCode> {
-    let mut rl = DefaultEditor::new()?;
-    rl.set_auto_add_history(true);
-    rl.bind_sequence(
-        KeyEvent(KeyCode::Char('s'), Modifiers::CTRL),
-        EventHandler::Simple(Cmd::Newline),
-    );
-    let mut code = String::new();
-    let terminate_n: u8 = 2;
-    let mut terminate_count: u8  = 0;
-
-    let prompt1 = "\x1b[1;32mmy-app > \x1b[m";
-    let prompt2 = "\x1b[1;32m ..... > \x1b[m";
-    let mut prompt = prompt1;
-    Python::with_gil(|py| {
-        let compile_command = PyModule::import_bound(py, "codeop")?.getattr("compile_command")?;
-        loop {
-            unsafe { if let Some(code) = EXIT_CODE { return Err(ExitCode::Exit(code)); } };
-            let readline = rl.readline(prompt);
-            match readline {
-                Ok(line) => {
-                    terminate_count = 0;
-                    if !code.is_empty(){ code += "\n"; }
-                    code += &line;
-                    if let Ok(true) = is_incomplete_code(&compile_command,&code) {
-                        prompt = prompt2;
-                    } else {
-                        prompt = prompt1;
-                        if let Err(e) = py.run_bound(&code, None, None) {
-                            println!("{}",e);
-                        }
-                        code.clear();
-                    }
-                },
-                Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
-                    if terminate_count >= terminate_n {
-                        println!("\nExiting...");
-                        return Ok(());
-                    }
-                    println!("Need {} interrupt to exit..", terminate_n - terminate_count);
-                    terminate_count += 1;
-                },
-                Err(err) => {
-                    println!("Error: {:?}", err);
-                    return Err(ExitCode::Readline(err));
-                }
-            }
-        };
-    })
-}
-
-fn main() -> ExitCode {
-    pyo3::append_to_inittab!(foo);
-    pyo3::prepare_freethreaded_python();
-    match run_shell(){
-        Ok(_) => ExitCode::Exit(0),
-        Err(e) => e,
-    }
+fn main() -> app::ExitCode {
+    let args = Args::parse().into();
+    app::run(args)
 }
