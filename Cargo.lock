@@ -266,6 +266,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyapp"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "pyo3",
+ "rustyline",
+ "thiserror",
+]
+
+[[package]]
 name = "pyo3"
 version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -291,16 +301,6 @@ checksum = "1e8730e591b14492a8945cdff32f089250b05f5accecf74aeddf9e8272ce1fa8"
 dependencies = [
  "once_cell",
  "target-lexicon",
-]
-
-[[package]]
-name = "pyo3-example"
-version = "0.1.0"
-dependencies = [
- "clap",
- "pyo3",
- "rustyline",
- "thiserror",
 ]
 
 [[package]]

@@ -1,0 +1,5 @@
+#!/bin/bash
+SCRIPT=$(readlink -f "$0")
+PYTHON_HOME=$(dirname $(dirname $(which python3)))
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$PYTHON_HOME/lib
+$SCRIPT.bin "$@"
