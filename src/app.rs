@@ -1,6 +1,6 @@
 use crate::{
     py, ExecMode, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_ERR, PROMPT2_OK,
-    TERMINATE_N,
+    PROMPT2_OK_NEWLINE, TERMINATE_N,
 };
 use pyo3::{
     types::{PyAnyMethods, PyModule},
@@ -96,6 +96,17 @@ impl MyHelper {
 }
 
 impl Highlighter for MyHelper {
+    fn continuation_prompt<'p, 'b>(
+        &self,
+        _prompt: &'p str,
+        default: bool,
+    ) -> Option<Cow<'b, str>> {
+        if default {
+            Some(Borrowed(PROMPT2_OK))
+        } else {
+            Some(Borrowed(PROMPT2))
+        }
+    }
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
         &'s self,
         prompt: &'p str,
@@ -129,6 +140,10 @@ fn run_shell() -> Result<(), ExecErr> {
     rl.bind_sequence(
         KeyEvent(KeyCode::BackTab, Modifiers::NONE),
         EventHandler::Simple(Cmd::Dedent(Movement::BackwardChar(4))),
+    );
+    rl.bind_sequence(
+        KeyEvent(KeyCode::Char('s'), Modifiers::CTRL),
+        EventHandler::Simple(Cmd::Newline),
     );
     let mut code = String::new();
     let mut prompt = PROMPT1;
@@ -268,6 +283,14 @@ mod test {
         pyo3::append_to_inittab!(foo);
         pyo3::prepare_freethreaded_python();
         exec_file(&PathBuf::from("tests/test1.py"), vec![]).expect("msg");
+    }
+    #[test]
+    fn test_shell() {
+        use super::*;
+        use py::foo;
+        pyo3::append_to_inittab!(foo);
+        pyo3::prepare_freethreaded_python();
+        run_shell().expect("msg");
     }
     #[test]
     fn test_pyo3() {
