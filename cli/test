@@ -1,5 +1,5 @@
 #!/bin/bash
 CLI_DIR=$(dirname $(readlink -f "$0"))
 for file in tests/*.py; do
-    $CLI_DIR/run $file
+    $CLI_DIR/run $file arg1 arg2 arg3
 done
