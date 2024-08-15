@@ -3,7 +3,7 @@ use crate::{
     PROMPT2_OK_NEWLINE, TERMINATE_N,
 };
 use pyo3::{
-    types::{PyAnyMethods, PyModule},
+    types::{IntoPyDict, PyAnyMethods, PyModule},
     PyErr, Python,
 };
 use rustyline::{
@@ -19,19 +19,24 @@ use std::{
 };
 use thiserror::Error;
 
+#[inline]
 pub(super) fn run(mode: ExecMode) -> ExitCode {
     use py::foo;
     pyo3::append_to_inittab!(foo);
     pyo3::prepare_freethreaded_python();
     match mode {
         ExecMode::InteractiveShell => ExitCode { inner: run_shell(), path: None },
-        ExecMode::ExecFile { quiet: true, path, args } => ExitCode {
-            inner: quiet_exec_file(&path, args),
-            path: Some(path),
+        ExecMode::ExecFile { quiet: true, file, args } => ExitCode {
+            inner: quiet_exec_file(&file, args),
+            path: Some(file),
         },
-        ExecMode::ExecFile { quiet: false, path, args } => {
-            ExitCode { inner: exec_file(&path, args), path: Some(path) }
+        ExecMode::ExecFile { quiet: false, file, args } => {
+            ExitCode { inner: exec_file(&file, args), path: Some(file) }
         }
+        ExecMode::Module { module, args } => {
+            ExitCode { inner: run_module(&module, args), path: None }
+        }
+        ExecMode::Command(cmd) => ExitCode { inner: run_command(&cmd), path: None },
     }
 }
 
@@ -51,6 +56,7 @@ enum ExecErr {
 }
 
 impl std::process::Termination for ExitCode {
+    #[inline]
     fn report(self) -> std::process::ExitCode {
         match self.inner {
             Ok(()) => 0.into(),
@@ -87,6 +93,7 @@ struct MyHelper {
 }
 
 impl MyHelper {
+    #[inline]
     fn new() -> Self {
         Self {
             hinter: HistoryHinter::new(),
@@ -96,6 +103,7 @@ impl MyHelper {
 }
 
 impl Highlighter for MyHelper {
+    #[inline]
     fn continuation_prompt<'p, 'b>(
         &self,
         _prompt: &'p str,
@@ -107,6 +115,7 @@ impl Highlighter for MyHelper {
             Some(Borrowed(PROMPT2))
         }
     }
+    #[inline]
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
         &'s self,
         prompt: &'p str,
@@ -123,12 +132,13 @@ impl Highlighter for MyHelper {
             Borrowed(prompt)
         }
     }
-
+    #[inline]
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         Owned(format!("\x1b[1m{hint}\x1b[m"))
     }
 }
 
+#[inline]
 fn run_shell() -> Result<(), ExecErr> {
     let mut rl = Editor::<MyHelper, DefaultHistory>::new()?;
     rl.set_helper(Some(MyHelper::new()));
@@ -204,6 +214,31 @@ fn run_shell() -> Result<(), ExecErr> {
     })
 }
 
+#[inline]
+fn run_module(module: &str, args: Vec<String>) -> Result<(), ExecErr> {
+    Python::with_gil(|py| {
+        py::import_args(py, args)?;
+        let runpy = PyModule::import_bound(py, "runpy")?;
+        let _ = runpy.call_method(
+            "run_module",
+            (module,),
+            Some(
+                &[("run_name", "__main__"), ("alter_sys", "true")].into_py_dict_bound(py),
+            ),
+        );
+        Ok(())
+    })
+}
+
+#[inline]
+fn run_command(cmd: &str) -> Result<(), ExecErr> {
+    Python::with_gil(|py| {
+        // py::import_args(py, args)?;
+        py.run_bound(cmd, None, None).map_err(Into::into)
+    })
+}
+
+#[inline]
 fn exec_file(path: &PathBuf, args: Vec<String>) -> Result<(), ExecErr> {
     Python::with_gil(|py| {
         let compile_command =
@@ -263,13 +298,15 @@ fn exec_file(path: &PathBuf, args: Vec<String>) -> Result<(), ExecErr> {
     })
 }
 
+#[inline]
 fn quiet_exec_file(path: &PathBuf, args: Vec<String>) -> Result<(), ExecErr> {
     Python::with_gil(|py| {
         let mut file = File::open(path)?;
         let mut buf = String::new();
         file.read_to_string(&mut buf)?;
         py::import_args(py, args)?;
-        py::init(py)?;
+        // TODO:
+        // py::init(py)?;
         py.run_bound(buf.as_str(), None, None)?;
         Ok(())
     })
