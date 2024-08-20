@@ -22,8 +22,8 @@ pub(super) fn foo(foo_module: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-pub(super) fn import_args(py: Python, args: Vec<String>) -> PyResult<()> {
-    PyModule::import_bound(py, "sys")?.setattr("argv", PyList::new_bound(py, args))
+pub(super) fn import_args(py: Python, py_args: &Vec<String>) -> PyResult<()> {
+    PyModule::import_bound(py, "sys")?.setattr("argv", PyList::new_bound(py, py_args))
 }
 
 pub(super) fn init(py: Python) -> PyResult<()> {

@@ -1,5 +1,5 @@
 use crate::{
-    py, ExecMode, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_ERR, PROMPT2_OK,
+    args, py, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_ERR, PROMPT2_OK,
     PROMPT2_OK_NEWLINE, TERMINATE_N,
 };
 use pyo3::{
@@ -20,23 +20,26 @@ use std::{
 use thiserror::Error;
 
 #[inline]
-pub(super) fn run(mode: ExecMode) -> ExitCode {
+pub(super) fn run(args: args::Args) -> ExitCode {
     use py::foo;
     pyo3::append_to_inittab!(foo);
     pyo3::prepare_freethreaded_python();
-    match mode {
-        ExecMode::InteractiveShell => ExitCode { inner: run_shell(), path: None },
-        ExecMode::ExecFile { quiet: true, file, args } => ExitCode {
-            inner: quiet_exec_file(&file, args),
-            path: Some(file),
+    match args.mode {
+        args::Mode::InteractiveShell => ExitCode { inner: run_shell(), path: None },
+        args::Mode::ExecFile(py_args) => ExitCode {
+            inner: if args.flag.quiet {
+                quiet_exec_file(&py_args)
+            } else {
+                exec_file(&py_args)
+            },
+            path: Some((&py_args[0]).into()),
         },
-        ExecMode::ExecFile { quiet: false, file, args } => {
-            ExitCode { inner: exec_file(&file, args), path: Some(file) }
+        args::Mode::ExecModule(py_args) => {
+            ExitCode { inner: run_module(&py_args), path: None }
         }
-        ExecMode::Module { module, args } => {
-            ExitCode { inner: run_module(&module, args), path: None }
+        args::Mode::Command(cmd, py_args) => {
+            ExitCode { inner: run_command(&cmd, &py_args), path: None }
         }
-        ExecMode::Command(cmd) => ExitCode { inner: run_command(&cmd), path: None },
     }
 }
 
@@ -215,42 +218,53 @@ fn run_shell() -> Result<(), ExecErr> {
 }
 
 #[inline]
-fn run_module(module: &str, args: Vec<String>) -> Result<(), ExecErr> {
+fn run_module(py_args: &Vec<String>) -> Result<(), ExecErr> {
     Python::with_gil(|py| {
-        py::import_args(py, args)?;
+        py::import_args(py, py_args)?;
+        let module = py_args.first().unwrap();
         let runpy = PyModule::import_bound(py, "runpy")?;
-        let _ = runpy.call_method(
+        match runpy.call_method(
             "run_module",
             (module,),
             Some(
                 &[("run_name", "__main__"), ("alter_sys", "true")].into_py_dict_bound(py),
             ),
-        );
-        Ok(())
+        ) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if "SystemExit: 0" == &(e.to_string()) {
+                    Ok(())
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
     })
 }
 
 #[inline]
-fn run_command(cmd: &str) -> Result<(), ExecErr> {
+fn run_command(cmd: &str, py_args: &Vec<String>) -> Result<(), ExecErr> {
     Python::with_gil(|py| {
-        // py::import_args(py, args)?;
+        py::import_args(py, py_args)?;
+        py::init(py)?;
         py.run_bound(cmd, None, None).map_err(Into::into)
     })
 }
 
 #[inline]
-fn exec_file(path: &PathBuf, args: Vec<String>) -> Result<(), ExecErr> {
+fn exec_file(py_args: &Vec<String>) -> Result<(), ExecErr> {
     Python::with_gil(|py| {
         let compile_command =
             PyModule::import_bound(py, "codeop")?.getattr("compile_command")?;
-        let file = File::open(path)?;
+        let file_path = py_args.first().unwrap();
+        let file = File::open(file_path)?;
         let mut reader = BufReader::new(file);
         let mut ping_pong_line_buffer = [String::new(), String::new()];
         let mut ping_pong_idx = true;
         let mut read_res = reader.read_line(&mut ping_pong_line_buffer[0]);
         let mut prompt = PROMPT1;
         let mut code = String::new();
-        py::import_args(py, args)?;
+        py::import_args(py, py_args)?;
         py::init(py)?;
         loop {
             let (this_idx, next_idx) = if read_res? == 0 {
@@ -299,14 +313,15 @@ fn exec_file(path: &PathBuf, args: Vec<String>) -> Result<(), ExecErr> {
 }
 
 #[inline]
-fn quiet_exec_file(path: &PathBuf, args: Vec<String>) -> Result<(), ExecErr> {
+fn quiet_exec_file(py_args: &Vec<String>) -> Result<(), ExecErr> {
     Python::with_gil(|py| {
-        let mut file = File::open(path)?;
+        let file_path = py_args.first().unwrap();
+        let mut file = File::open(file_path)?;
         let mut buf = String::new();
         file.read_to_string(&mut buf)?;
-        py::import_args(py, args)?;
+        py::import_args(py, py_args)?;
         // TODO:
-        // py::init(py)?;
+        py::init(py)?;
         py.run_bound(buf.as_str(), None, None)?;
         Ok(())
     })
@@ -319,7 +334,7 @@ mod test {
         use py::foo;
         pyo3::append_to_inittab!(foo);
         pyo3::prepare_freethreaded_python();
-        exec_file(&PathBuf::from("tests/test1.py"), vec![]).expect("msg");
+        exec_file(&vec!["tests/test1.py".into()]).expect("msg");
     }
     #[test]
     fn test_shell() {
@@ -328,6 +343,18 @@ mod test {
         pyo3::append_to_inittab!(foo);
         pyo3::prepare_freethreaded_python();
         run_shell().expect("msg");
+    }
+    #[test]
+    fn test_cmd() {
+        use super::*;
+        use py::foo;
+        pyo3::append_to_inittab!(foo);
+        pyo3::prepare_freethreaded_python();
+        run_command(
+            "import sys;print(sys.argv)".into(),
+            &vec!["-c".into(), "11".into(), "22".into()],
+        )
+        .expect("msg");
     }
     #[test]
     fn test_pyo3() {
