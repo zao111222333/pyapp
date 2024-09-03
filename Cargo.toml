@@ -7,5 +7,6 @@ edition = "2021"
 thiserror = "1.0"
 pyo3 = { version = "0.22.0", features = ["experimental-inspect"] }
 rustyline = { git = "https://github.com/zao111222333/rustyline.git", features = ["custom-bindings", "derive"]}
+kdam = { version = "0.5.2", features = ["rich", "spinner"] }
 # rustyline = { path = "../rustyline", features = ["custom-bindings", "derive"]}
 # rustyline = { version = "14.0.0", features = ["custom-bindings", "derive"]}
