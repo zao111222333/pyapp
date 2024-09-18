@@ -1,23 +1,42 @@
 use crate::{
-    args, py, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_ERR, PROMPT2_OK,
-    PROMPT2_OK_NEWLINE, TERMINATE_N,
+    args, py, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_OK, TERMINATE_N,
 };
 use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyModule},
     PyErr, Python,
 };
 use rustyline::{
-    config::Configurer, error::ReadlineError, highlight::Highlighter,
-    hint::HistoryHinter, history::DefaultHistory, Cmd, Completer, Editor, EventHandler,
-    Helper, Hinter, KeyCode, KeyEvent, Modifiers, Movement, Validator,
+    config::Configurer,
+    error::ReadlineError,
+    highlight::{Highlighter, StyledBlock},
+    hint::HistoryHinter,
+    history::DefaultHistory,
+    Cmd, Completer, Editor, EventHandler, Helper, Hinter, KeyCode, KeyEvent, Modifiers,
+    Movement, Validator,
 };
 use std::{
     borrow::Cow::{self, Borrowed, Owned},
     fs::File,
     io::{BufRead, BufReader, Read},
     path::PathBuf,
+    sync::LazyLock,
+};
+use syntect::{
+    dumps::from_binary,
+    highlighting::Theme,
+    parsing::{SyntaxReference, SyntaxSet},
 };
 use thiserror::Error;
+
+include!(concat!(env!("OUT_DIR"), "/syntaxes_themes.rs"));
+
+static THEME: LazyLock<Theme> = LazyLock::new(|| from_binary(COMPRESSED_THEME));
+
+static SYNTAX_SET: LazyLock<SyntaxSet> =
+    LazyLock::new(|| from_binary(COMPRESSED_SYNTAX_SET));
+
+static SYNTAX: LazyLock<&'static SyntaxReference> =
+    LazyLock::new(|| SYNTAX_SET.find_syntax_by_extension("py").unwrap());
 
 #[inline]
 pub(super) fn run(args: args::Args) -> ExitCode {
@@ -106,16 +125,60 @@ impl MyHelper {
 }
 
 impl Highlighter for MyHelper {
+    fn highlight_char(&self, line: &str, pos: usize, forced: bool) -> bool {
+        forced
+            || line
+                .chars()
+                .nth(pos - 1)
+                .map_or(false, |c| " .:(){}[]><+-*/@=".contains(c))
+    }
     #[inline]
-    fn continuation_prompt<'p, 'b>(
+    fn highlight_line<'l>(
         &self,
+        lines: &'l str,
+        _pos: usize,
+    ) -> impl Iterator<Item = impl Iterator<Item = impl 'l + StyledBlock>> {
+        fn syntect_style_to_anstyle(s: syntect::highlighting::Style) -> anstyle::Style {
+            use anstyle::{Color, RgbColor, Style};
+            use syntect::highlighting::FontStyle;
+            let fg = s.foreground;
+            // let bg = s.background;
+            let mut style = Style::new();
+            style = style.fg_color(Some(Color::Rgb(RgbColor(fg.r, fg.g, fg.b))));
+            // style = style.bg_color(Some(Color::Rgb(RgbColor(bg.r, bg.g, bg.b))));
+            if s.font_style.contains(FontStyle::BOLD) {
+                style = style.bold();
+            }
+            if s.font_style.contains(FontStyle::ITALIC) {
+                style = style.italic();
+            }
+            if s.font_style.contains(FontStyle::UNDERLINE) {
+                style = style.underline();
+            }
+            style
+        }
+
+        use syntect::easy::HighlightLines;
+        use syntect::highlighting::Style;
+        let mut highlighter = HighlightLines::new(&SYNTAX, &THEME);
+        lines.split('\n').map(move |l| {
+            highlighter
+                .highlight_line(l, &SYNTAX_SET)
+                .unwrap_or(vec![(Style::default(), l)])
+                .into_iter()
+                .map(|(s, token)| (syntect_style_to_anstyle(s), token))
+        })
+    }
+    #[inline]
+    fn continuation_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
         _prompt: &'p str,
         default: bool,
-    ) -> Option<Cow<'b, str>> {
+    ) -> Cow<'b, str> {
         if default {
-            Some(Borrowed(PROMPT2_OK))
+            Borrowed(PROMPT2_OK)
         } else {
-            Some(Borrowed(PROMPT2))
+            Borrowed(PROMPT2)
         }
     }
     #[inline]
@@ -126,7 +189,7 @@ impl Highlighter for MyHelper {
     ) -> Cow<'b, str> {
         if default {
             match (self.state.continuation, self.state.on_error) {
-                (true, true) => Borrowed(PROMPT2_ERR),
+                (true, true) => Borrowed(PROMPT2_OK),
                 (true, false) => Borrowed(PROMPT2_OK),
                 (false, true) => Borrowed(PROMPT1_ERR),
                 (false, false) => Borrowed(PROMPT1_OK),
@@ -169,6 +232,20 @@ fn run_shell() -> Result<(), ExecErr> {
             let readline = rl.readline(prompt);
             match readline {
                 Ok(line) => {
+                    match line.as_str() {
+                        "clear" => {
+                            rl.clear_screen()?;
+                            if let Some(helper) = rl.helper_mut() {
+                                helper.state.on_error = false;
+                            }
+                            continue;
+                        }
+                        "exit" => {
+                            println!("\nExiting...");
+                            return Ok(());
+                        }
+                        _ => (),
+                    }
                     terminate_count = 0;
                     if !code.is_empty() {
                         code += "\n";

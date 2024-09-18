@@ -7,8 +7,6 @@ const PROMPT2: &str = " .... > ";
 const PROMPT1_OK: &str = "\x1b[1;94mpyapp\x1b[1;32m > \x1b[m";
 const PROMPT1_ERR: &str = "\x1b[1;94mpyapp\x1b[1;91m > \x1b[m";
 const PROMPT2_OK: &str = "\x1b[1;94m ....\x1b[1;32m > \x1b[m";
-const PROMPT2_OK_NEWLINE: &str = "\n\x1b[1;94m ....\x1b[1;32m > \x1b[m";
-const PROMPT2_ERR: &str = "\x1b[1;94m ....\x1b[1;91m > \x1b[m";
 const TERMINATE_N: u8 = 2;
 
 fn main() -> app::ExitCode {

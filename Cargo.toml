@@ -6,7 +6,11 @@ edition = "2021"
 [dependencies]
 thiserror = "1.0"
 pyo3 = { version = "0.22.0", features = ["experimental-inspect"] }
-rustyline = { git = "https://github.com/zao111222333/rustyline.git", features = ["custom-bindings", "derive"]}
+rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "highlight", features = ["custom-bindings", "derive", "continuation-prompt", "anstyle"]}
+# rustyline = { path = "../gwenn-rustyline", features = ["custom-bindings", "derive", "continuation-prompt", "anstyle"]}
 kdam = { version = "0.5.2", features = ["rich", "spinner"] }
-# rustyline = { path = "../rustyline", features = ["custom-bindings", "derive"]}
-# rustyline = { version = "14.0.0", features = ["custom-bindings", "derive"]}
+anstyle = "1.0.8"
+syntect = "5.2.0"
+
+[build-dependencies]
+syntect = "5.2.0"

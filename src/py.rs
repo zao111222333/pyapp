@@ -10,12 +10,12 @@ fn add_one(x: i64) -> i64 {
 }
 
 #[pyfunction]
-fn loading() {
+fn loading() -> PyResult<()> {
     // https://github.com/clitic/kdam/blob/main/kdam/examples/rich.rs
     use kdam::{term, term::Colorizer, tqdm, BarExt, Column, RichProgress, Spinner};
-    use std::io::{stderr, IsTerminal, Result};
+    use std::io::{stderr, IsTerminal};
     term::init(stderr().is_terminal());
-    term::hide_cursor();
+    term::hide_cursor()?;
 
     let mut pb = RichProgress::new(
         tqdm!(total = 231231231, unit_scale = true, unit_divisor = 1024, unit = "B"),
@@ -37,14 +37,14 @@ fn loading() {
         ],
     );
 
-    pb.write("download will begin in 5 seconds".colorize("bold red"));
+    pb.write("download will begin in 5 seconds".colorize("bold red"))?;
 
     while pb.pb.elapsed_time() <= 5.0 {
-        pb.refresh();
+        pb.refresh()?;
     }
 
     pb.replace(1, Column::Text("[bold blue]docker.exe".to_owned()));
-    pb.write("downloading docker.exe".colorize("bold cyan"));
+    pb.write("downloading docker.exe".colorize("bold cyan"))?;
 
     let total_size = 231231231;
     let mut downloaded = 0;
@@ -52,13 +52,14 @@ fn loading() {
     while downloaded < total_size {
         let new = std::cmp::min(downloaded + 223211, total_size);
         downloaded = new;
-        pb.update_to(new);
+        pb.update_to(new)?;
         std::thread::sleep(std::time::Duration::from_millis(12));
     }
 
-    pb.write("downloaded docker.exe".colorize("bold green"));
+    pb.write("downloaded docker.exe".colorize("bold green"))?;
     eprintln!();
-    term::show_cursor();
+    term::show_cursor()?;
+    Ok(())
 }
 
 #[pyfunction]
