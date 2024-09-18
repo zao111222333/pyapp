@@ -37,9 +37,9 @@ fn loading() -> PyResult<()> {
         ],
     );
 
-    pb.write("download will begin in 5 seconds".colorize("bold red"))?;
+    pb.write("download will begin in 2 seconds".colorize("bold red"))?;
 
-    while pb.pb.elapsed_time() <= 5.0 {
+    while pb.pb.elapsed_time() <= 2.0 {
         pb.refresh()?;
     }
 
@@ -50,7 +50,7 @@ fn loading() -> PyResult<()> {
     let mut downloaded = 0;
 
     while downloaded < total_size {
-        let new = std::cmp::min(downloaded + 223211, total_size);
+        let new = std::cmp::min(downloaded + 2203211, total_size);
         downloaded = new;
         pb.update_to(new)?;
         std::thread::sleep(std::time::Duration::from_millis(12));
