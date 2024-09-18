@@ -5,6 +5,6 @@ A Python REPL demo with embedded Rust APIs using `pyo3`
 see more in `cli/*`
 ## TODO
 - [ ] pyi generate
-- [ ] continuation prompt
+- [x] continuation prompt
 ## Reference
 [ptpython](https://github.com/prompt-toolkit/ptpython): A better Python REPL
