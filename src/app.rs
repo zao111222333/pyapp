@@ -1,4 +1,4 @@
-use rustyline::highlight::syntect;
+use rustyline::highlight::syntect::{self, highlighting::Color};
 
 use crate::{
     args, py, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_OK, TERMINATE_N,
@@ -117,38 +117,216 @@ impl MyHelper {
     }
 }
 
+struct BracketSplitter<'a> {
+    bytes: core::slice::Iter<'a, u8>,
+    pos: usize,
+    level: i16,
+}
+
+impl<'a> BracketSplitter<'a> {
+    fn new<'b, const N: usize, C>(
+        s: &'a str,
+        cursor_pos: usize,
+        colors: &'b [C; N],
+        color_invalid: &'b C,
+        color_focus: &'b C,
+    ) -> impl 'b + Iterator<Item = (usize, (&'b C, Option<&'b C>))> {
+        let mut focus_l_idx = None;
+        let mut focus_r_idx = None;
+        let mut open_bracket_idx = Vec::new();
+        let vec = Self { bytes: s.as_bytes().into_iter(), pos: 0, level: 0 }
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (pos, is_open, level))| {
+                match (focus_l_idx, focus_r_idx) {
+                    (None, None) => {
+                        if pos >= cursor_pos {
+                            if is_open {
+                                if pos == cursor_pos {
+                                    focus_l_idx = Some(idx);
+                                    open_bracket_idx.push(idx);
+                                } else {
+                                    focus_l_idx = open_bracket_idx.last().copied();
+                                }
+                            } else {
+                                if let Some(_focus_l_idx) = open_bracket_idx.pop() {
+                                    focus_l_idx = Some(_focus_l_idx);
+                                    focus_r_idx = Some(idx);
+                                };
+                            }
+                        } else {
+                            if is_open {
+                                open_bracket_idx.push(idx);
+                            } else {
+                                open_bracket_idx.pop();
+                            }
+                        }
+                    }
+                    (None, Some(_)) => {
+                        unreachable!()
+                    }
+                    (Some(_), None) => {
+                        if is_open {
+                            open_bracket_idx.push(pos);
+                        } else {
+                            if focus_l_idx == open_bracket_idx.pop() {
+                                focus_r_idx = Some(idx);
+                            }
+                        }
+                    }
+                    (Some(_), Some(_)) => {}
+                }
+                (pos, level)
+            })
+            .collect::<Vec<_>>();
+        let min = if let (Some((_, first_level)), Some((_, last_level))) =
+            (vec.first(), vec.last())
+        {
+            0.max(*last_level).max(*first_level)
+        } else {
+            0
+        };
+        let m = vec.into_iter().enumerate().map(move |(idx, (pos, level))| {
+            (pos, {
+                let color_fb = if level >= min {
+                    colors.get(level as usize % N).unwrap_or(color_invalid)
+                } else {
+                    color_invalid
+                };
+                let color_bg = if Some(idx) == focus_l_idx || Some(idx) == focus_r_idx {
+                    Some(color_focus)
+                } else {
+                    None
+                };
+                (color_fb, color_bg)
+            })
+        });
+        m
+    }
+}
+
+impl<'a> Iterator for BracketSplitter<'a> {
+    type Item = (usize, bool, i16);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(c) = self.bytes.next() {
+            match c {
+                b'(' | b'{' | b'[' => {
+                    self.level += 1;
+                    let out = (self.pos, true, self.level);
+                    self.pos += 1;
+                    return Some(out);
+                }
+                b')' | b'}' | b']' => {
+                    let out = (self.pos, false, self.level);
+                    self.level -= 1;
+                    self.pos += 1;
+                    return Some(out);
+                }
+                _ => {
+                    self.pos += 1;
+                }
+            }
+        }
+        None
+    }
+}
+
 impl Highlighter for MyHelper {
     fn highlight_char(&self, line: &str, pos: usize, forced: bool) -> bool {
-        // &line[pos..=pos];
         if line.len() == 0 {
             false
         } else {
+            let bytes = line.as_bytes();
+            let c1 = bytes.get(pos - 1);
+            let c2 = bytes.get(pos + 1);
             forced
-                || line
-                    .chars()
-                    .nth(pos - 1)
-                    .map_or(false, |c| " .:(){}[]><+-*/@=".contains(c))
+                || c1.map_or(false, |c| {
+                    matches!(
+                        c,
+                        b' ' | b'.'
+                            | b':'
+                            | b'('
+                            | b')'
+                            | b'['
+                            | b']'
+                            | b'{'
+                            | b'}'
+                            | b'>'
+                            | b'<'
+                            | b'+'
+                            | b'-'
+                            | b'*'
+                            | b'/'
+                            | b'@'
+                            | b'='
+                    )
+                })
+                || c2.map_or(false, |c| {
+                    matches!(c, b' ' | b'(' | b')' | b'[' | b']' | b'{' | b'}')
+                })
         }
     }
     #[inline]
     fn highlight_lines<'l>(
         &self,
         lines: &'l str,
-        _pos: usize,
+        pos: usize,
     ) -> impl Iterator<Item = impl Iterator<Item = impl 'l + StyledBlock>> {
         use syntect::easy::HighlightLines;
         use syntect::highlighting::Style;
         let syntax = &self.syntax_set.syntaxes()[0];
         let mut highlighter = HighlightLines::new(syntax, &self.theme);
+        let mut bgn_pos = 0;
+        let mut brackets = BracketSplitter::new(
+            lines,
+            pos,
+            &[
+                Color { r: 0xFF, g: 0xFF, b: 0x00, a: 0xFF },
+                Color { r: 0xFF, g: 0x00, b: 0xFF, a: 0xFF },
+                Color { r: 0x00, g: 0xFF, b: 0xFF, a: 0xFF },
+            ],
+            &Color { r: 0xFF, g: 0x00, b: 0x00, a: 0xFF },
+            &Color { r: 0x00, g: 0xFF, b: 0x00, a: 0xFF },
+        );
+        let mut bracket = brackets.next();
         lines.split('\n').map(move |l| {
-            highlighter
+            let iter = highlighter
                 .highlight_line(l, &self.syntax_set)
                 .unwrap_or(vec![(Style::default(), l)])
                 .into_iter()
-                .map(|(mut s, token)| {
+                .flat_map(|(mut s, token)| {
                     s.background.a = 0;
-                    (s, token)
+                    let end_pos = bgn_pos + token.len();
+                    let mut v = Vec::new();
+                    while let Some((bracket_pos, (color_fb, color_bg))) = bracket {
+                        if bgn_pos <= bracket_pos && end_pos > bracket_pos {
+                            let shifted_pos = bracket_pos - bgn_pos;
+                            v.push((s, &token[0..shifted_pos]));
+                            v.push((
+                                {
+                                    let mut _s = s;
+                                    _s.foreground = *color_fb;
+                                    if let Some(color_bg) = color_bg {
+                                        _s.background = *color_bg;
+                                    }
+                                    _s
+                                },
+                                &token[shifted_pos..=shifted_pos],
+                            ));
+                            bgn_pos = bracket_pos + 1;
+                            bracket = brackets.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    v.push((s, &lines[bgn_pos..end_pos]));
+                    bgn_pos = end_pos;
+                    v.into_iter()
                 })
+                .collect::<Vec<_>>();
+            bgn_pos += 1;
+            iter.into_iter()
         })
     }
     #[inline]
@@ -182,7 +360,7 @@ impl Highlighter for MyHelper {
     }
     #[inline]
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
-        Owned(format!("\x1b[1m{hint}\x1b[m"))
+        Owned(format!("\x1b[90m{hint}\x1b[0m"))
     }
 }
 
