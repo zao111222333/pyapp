@@ -1,3 +1,5 @@
+use rustyline::highlight::syntect;
+
 use crate::{
     args, py, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_OK, TERMINATE_N,
 };
@@ -6,7 +8,6 @@ use pyo3::{
     PyErr, Python,
 };
 use rustyline::{
-    config::Configurer,
     error::ReadlineError,
     highlight::{Highlighter, StyledBlock},
     hint::HistoryHinter,
@@ -18,25 +19,13 @@ use std::{
     borrow::Cow::{self, Borrowed, Owned},
     fs::File,
     io::{BufRead, BufReader, Read},
+    mem,
     path::PathBuf,
-    sync::LazyLock,
 };
-use syntect::{
-    dumps::from_binary,
-    highlighting::Theme,
-    parsing::{SyntaxReference, SyntaxSet},
-};
+use syntect::{dumps::from_binary, highlighting::Theme, parsing::SyntaxSet};
 use thiserror::Error;
 
 include!(concat!(env!("OUT_DIR"), "/syntaxes_themes.rs"));
-
-static THEME: LazyLock<Theme> = LazyLock::new(|| from_binary(COMPRESSED_THEME));
-
-static SYNTAX_SET: LazyLock<SyntaxSet> =
-    LazyLock::new(|| from_binary(COMPRESSED_SYNTAX_SET));
-
-static SYNTAX: LazyLock<&'static SyntaxReference> =
-    LazyLock::new(|| SYNTAX_SET.find_syntax_by_extension("py").unwrap());
 
 #[inline]
 pub(super) fn run(args: args::Args) -> ExitCode {
@@ -112,6 +101,8 @@ struct MyHelper {
     #[rustyline(Hinter)]
     hinter: HistoryHinter,
     state: State,
+    theme: Theme,
+    syntax_set: SyntaxSet,
 }
 
 impl MyHelper {
@@ -120,53 +111,44 @@ impl MyHelper {
         Self {
             hinter: HistoryHinter::new(),
             state: State { continuation: false, on_error: false },
+            theme: from_binary(COMPRESSED_THEME),
+            syntax_set: from_binary(COMPRESSED_SYNTAX_SET),
         }
     }
 }
 
 impl Highlighter for MyHelper {
     fn highlight_char(&self, line: &str, pos: usize, forced: bool) -> bool {
-        forced
-            || line
-                .chars()
-                .nth(pos - 1)
-                .map_or(false, |c| " .:(){}[]><+-*/@=".contains(c))
+        // &line[pos..=pos];
+        if line.len() == 0 {
+            false
+        } else {
+            forced
+                || line
+                    .chars()
+                    .nth(pos - 1)
+                    .map_or(false, |c| " .:(){}[]><+-*/@=".contains(c))
+        }
     }
     #[inline]
-    fn highlight_line<'l>(
+    fn highlight_lines<'l>(
         &self,
         lines: &'l str,
         _pos: usize,
     ) -> impl Iterator<Item = impl Iterator<Item = impl 'l + StyledBlock>> {
-        fn syntect_style_to_anstyle(s: syntect::highlighting::Style) -> anstyle::Style {
-            use anstyle::{Color, RgbColor, Style};
-            use syntect::highlighting::FontStyle;
-            let fg = s.foreground;
-            // let bg = s.background;
-            let mut style = Style::new();
-            style = style.fg_color(Some(Color::Rgb(RgbColor(fg.r, fg.g, fg.b))));
-            // style = style.bg_color(Some(Color::Rgb(RgbColor(bg.r, bg.g, bg.b))));
-            if s.font_style.contains(FontStyle::BOLD) {
-                style = style.bold();
-            }
-            if s.font_style.contains(FontStyle::ITALIC) {
-                style = style.italic();
-            }
-            if s.font_style.contains(FontStyle::UNDERLINE) {
-                style = style.underline();
-            }
-            style
-        }
-
         use syntect::easy::HighlightLines;
         use syntect::highlighting::Style;
-        let mut highlighter = HighlightLines::new(&SYNTAX, &THEME);
+        let syntax = &self.syntax_set.syntaxes()[0];
+        let mut highlighter = HighlightLines::new(syntax, &self.theme);
         lines.split('\n').map(move |l| {
             highlighter
-                .highlight_line(l, &SYNTAX_SET)
+                .highlight_line(l, &self.syntax_set)
                 .unwrap_or(vec![(Style::default(), l)])
                 .into_iter()
-                .map(|(s, token)| (syntect_style_to_anstyle(s), token))
+                .map(|(mut s, token)| {
+                    s.background.a = 0;
+                    (s, token)
+                })
         })
     }
     #[inline]
@@ -208,7 +190,6 @@ impl Highlighter for MyHelper {
 fn run_shell() -> Result<(), ExecErr> {
     let mut rl = Editor::<MyHelper, DefaultHistory>::new()?;
     rl.set_helper(Some(MyHelper::new()));
-    rl.set_auto_add_history(true);
     rl.bind_sequence(
         KeyEvent(KeyCode::Tab, Modifiers::NONE),
         EventHandler::Simple(Cmd::Indent(Movement::ForwardChar(4))),
@@ -260,10 +241,10 @@ fn run_shell() -> Result<(), ExecErr> {
                         prompt = PROMPT2;
                         if let Err(e) = py.run_bound(&code, None, None) {
                             println!("{}", e);
-                            code.clear();
+                            rl.add_history_entry(mem::take(&mut code))?;
                             (false, Some(true))
                         } else {
-                            code.clear();
+                            rl.add_history_entry(mem::take(&mut code))?;
                             (false, Some(false))
                         }
                     };

@@ -2,15 +2,15 @@
 name = "pyapp"
 version = "0.1.0"
 edition = "2021"
+[workspace.dependencies]
+rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "highlight", features = ["custom-bindings", "derive", "continuation-prompt"]}
+# rustyline = { path = "../gwenn-rustyline", features = ["custom-bindings", "derive", "continuation-prompt"]}
 
 [dependencies]
 thiserror = "1.0"
 pyo3 = { version = "0.22.0", features = ["experimental-inspect"] }
-rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "highlight", features = ["custom-bindings", "derive", "continuation-prompt", "anstyle"]}
-# rustyline = { path = "../gwenn-rustyline", features = ["custom-bindings", "derive", "continuation-prompt", "anstyle"]}
 kdam = { version = "0.5.2", features = ["rich", "spinner"] }
-anstyle = "1.0.8"
-syntect = "5.2.0"
+rustyline = { workspace = true }
 
 [build-dependencies]
-syntect = "5.2.0"
+rustyline = { workspace = true }

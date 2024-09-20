@@ -1,8 +1,8 @@
+use rustyline::highlight::syntect;
 use std::env;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
-
 use syntect::dumps::dump_binary;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSetBuilder;
@@ -13,10 +13,10 @@ fn main() {
     // let theme = ThemeSet::get_theme("assets/themes/Dracula.tmTheme").unwrap();
     // let theme = ThemeSet::get_theme("assets/themes/base16-256.tmTheme").unwrap();
     let mut builder = SyntaxSetBuilder::new();
-    builder.add_from_folder("assets/syntax", true).unwrap();
+    builder.add_from_folder("assets/syntax", false).unwrap();
     // let ps = SyntaxSet::load_defaults_newlines();
     let ps = builder.build();
-
+    assert!(ps.syntaxes().len() == 1);
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let dest_path = out_dir.join("syntaxes_themes.rs");
     let mut f = File::create(&dest_path).unwrap();
