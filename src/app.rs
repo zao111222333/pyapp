@@ -1,31 +1,31 @@
-use rustyline::highlight::syntect::{self, highlighting::Color};
-
 use crate::{
-    args, py, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_OK, TERMINATE_N,
+    args, py, BLANK_COLOR, BRACKET_COLORS, CLASS_COLOR, COMMENT_COLOR, FUNCTION_COLOR,
+    KEY1_COLOR, KEY2_COLOR, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_OK,
+    STRING_COLOR, SYMBOL_COLOR, TERMINATE_N, UNKNOWN_COLOR,
 };
+use anstyle::Style;
 use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyModule},
     PyErr, Python,
 };
+use ruff_python_parser::{LexicalErrorType, ParseErrorType, TokenKind};
 use rustyline::{
+    completion::Completer,
+    config::Configurer,
     error::ReadlineError,
     highlight::{Highlighter, StyledBlock},
-    hint::HistoryHinter,
+    hint::Hinter,
     history::DefaultHistory,
-    Cmd, Completer, Editor, EventHandler, Helper, Hinter, KeyCode, KeyEvent, Modifiers,
-    Movement, Validator,
+    validate::{ValidationContext, ValidationResult, Validator},
+    Cmd, Editor, EventHandler, Helper, KeyCode, KeyEvent, Modifiers, Movement,
 };
 use std::{
     borrow::Cow::{self, Borrowed, Owned},
     fs::File,
     io::{BufRead, BufReader, Read},
-    mem,
     path::PathBuf,
 };
-use syntect::{dumps::from_binary, highlighting::Theme, parsing::SyntaxSet};
 use thiserror::Error;
-
-include!(concat!(env!("OUT_DIR"), "/syntaxes_themes.rs"));
 
 #[inline]
 pub(super) fn run(args: args::Args) -> ExitCode {
@@ -91,283 +91,313 @@ impl std::process::Termination for ExitCode {
     }
 }
 
-struct State {
-    continuation: bool,
+// #[derive(Completer, Helper, Hinter, Validator)]
+struct MyHelper {
+    // #[rustyline(Hinter)]
+    // hinter: HistoryHinter,
+    parsed: ruff_python_parser::Parsed<ruff_python_parser::Mod>,
+    need_render: bool,
     on_error: bool,
 }
 
-#[derive(Completer, Helper, Hinter, Validator)]
-struct MyHelper {
-    #[rustyline(Hinter)]
-    hinter: HistoryHinter,
-    state: State,
-    theme: Theme,
-    syntax_set: SyntaxSet,
+impl Validator for MyHelper {
+    fn validate(
+        &mut self,
+        _ctx: &mut ValidationContext,
+    ) -> rustyline::Result<ValidationResult> {
+        let mut indent = 0;
+        let mut incomplete = false;
+        let mut tokens_rev = self.parsed.tokens().iter().rev();
+        while let Some(token) = tokens_rev.next() {
+            let (kind, range) = token.as_tuple();
+            match kind {
+                TokenKind::Dedent => {
+                    indent += 1;
+                    incomplete = true;
+                }
+                TokenKind::NonLogicalNewline | TokenKind::Newline => {
+                    if incomplete {
+                        incomplete = range.len().to_u32() == 0
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        for error in self.parsed.errors() {
+            match &error.error {
+                ParseErrorType::OtherError(s) => {
+                    if s.starts_with("Expected an indented") {
+                        incomplete = true;
+                        indent += 1;
+                        break;
+                    }
+                }
+                ParseErrorType::Lexical(
+                    LexicalErrorType::Eof | LexicalErrorType::LineContinuationError,
+                ) => {
+                    incomplete = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if incomplete {
+            Ok(ValidationResult::Incomplete(indent * 2))
+        } else {
+            Ok(ValidationResult::Valid(None))
+        }
+    }
+}
+impl Completer for MyHelper {
+    type Candidate = String;
+}
+impl Hinter for MyHelper {
+    type Hint = String;
+}
+
+impl Helper for MyHelper {
+    fn update_after_edit(&mut self, line: &str, _pos: usize, _forced_refresh: bool) {
+        use ruff_python_parser::{parse_unchecked, Mode};
+        self.parsed = parse_unchecked(line, Mode::Module);
+        self.need_render = true;
+    }
 }
 
 impl MyHelper {
     #[inline]
     fn new() -> Self {
         Self {
-            hinter: HistoryHinter::new(),
-            state: State { continuation: false, on_error: false },
-            theme: from_binary(COMPRESSED_THEME),
-            syntax_set: from_binary(COMPRESSED_SYNTAX_SET),
+            // hinter: HistoryHinter::new(),
+            parsed: Default::default(),
+            on_error: false,
+            need_render: true,
         }
-    }
-}
-
-struct BracketSplitter<'a> {
-    bytes: core::slice::Iter<'a, u8>,
-    pos: usize,
-    level: i16,
-}
-
-impl<'a> BracketSplitter<'a> {
-    fn new<'b, const N: usize, C>(
-        s: &'a str,
-        cursor_pos: usize,
-        colors: &'b [C; N],
-        color_invalid: &'b C,
-        color_focus: &'b C,
-    ) -> impl 'b + Iterator<Item = (usize, (&'b C, Option<&'b C>))> {
-        let mut focus_l_idx = None;
-        let mut focus_r_idx = None;
-        let mut open_bracket_idx = Vec::new();
-        let vec = Self { bytes: s.as_bytes().into_iter(), pos: 0, level: 0 }
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (pos, is_open, level))| {
-                match (focus_l_idx, focus_r_idx) {
-                    (None, None) => {
-                        if pos >= cursor_pos {
-                            if is_open {
-                                if pos == cursor_pos {
-                                    focus_l_idx = Some(idx);
-                                    open_bracket_idx.push(idx);
-                                } else {
-                                    focus_l_idx = open_bracket_idx.last().copied();
-                                }
-                            } else {
-                                if let Some(_focus_l_idx) = open_bracket_idx.pop() {
-                                    focus_l_idx = Some(_focus_l_idx);
-                                    focus_r_idx = Some(idx);
-                                };
-                            }
-                        } else {
-                            if is_open {
-                                open_bracket_idx.push(idx);
-                            } else {
-                                open_bracket_idx.pop();
-                            }
-                        }
-                    }
-                    (None, Some(_)) => {
-                        unreachable!()
-                    }
-                    (Some(_), None) => {
-                        if is_open {
-                            open_bracket_idx.push(pos);
-                        } else {
-                            if focus_l_idx == open_bracket_idx.pop() {
-                                focus_r_idx = Some(idx);
-                            }
-                        }
-                    }
-                    (Some(_), Some(_)) => {}
-                }
-                (pos, level)
-            })
-            .collect::<Vec<_>>();
-        let min = if let (Some((_, first_level)), Some((_, last_level))) =
-            (vec.first(), vec.last())
-        {
-            0.max(*last_level).max(*first_level)
-        } else {
-            0
-        };
-        let m = vec.into_iter().enumerate().map(move |(idx, (pos, level))| {
-            (pos, {
-                let color_fb = if level >= min {
-                    colors.get(level as usize % N).unwrap_or(color_invalid)
-                } else {
-                    color_invalid
-                };
-                let color_bg = if Some(idx) == focus_l_idx || Some(idx) == focus_r_idx {
-                    Some(color_focus)
-                } else {
-                    None
-                };
-                (color_fb, color_bg)
-            })
-        });
-        m
-    }
-}
-
-impl<'a> Iterator for BracketSplitter<'a> {
-    type Item = (usize, bool, i16);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while let Some(c) = self.bytes.next() {
-            match c {
-                b'(' | b'{' | b'[' => {
-                    self.level += 1;
-                    let out = (self.pos, true, self.level);
-                    self.pos += 1;
-                    return Some(out);
-                }
-                b')' | b'}' | b']' => {
-                    let out = (self.pos, false, self.level);
-                    self.level -= 1;
-                    self.pos += 1;
-                    return Some(out);
-                }
-                _ => {
-                    self.pos += 1;
-                }
-            }
-        }
-        None
     }
 }
 
 impl Highlighter for MyHelper {
-    fn highlight_char(&self, line: &str, pos: usize, forced: bool) -> bool {
-        if line.len() == 0 {
-            false
-        } else {
-            let bytes = line.as_bytes();
-            let c1 = bytes.get(pos - 1);
-            let c2 = bytes.get(pos + 1);
-            forced
-                || c1.map_or(false, |c| {
-                    matches!(
-                        c,
-                        b' ' | b'.'
-                            | b':'
-                            | b'('
-                            | b')'
-                            | b'['
-                            | b']'
-                            | b'{'
-                            | b'}'
-                            | b'>'
-                            | b'<'
-                            | b'+'
-                            | b'-'
-                            | b'*'
-                            | b'/'
-                            | b'@'
-                            | b'='
-                    )
-                })
-                || c2.map_or(false, |c| {
-                    matches!(c, b' ' | b'(' | b')' | b'[' | b']' | b'{' | b'}')
-                })
-        }
+    fn highlight_char(&mut self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        self.need_render
     }
     #[inline]
-    fn highlight_lines<'l>(
-        &self,
-        lines: &'l str,
-        pos: usize,
-    ) -> impl Iterator<Item = impl Iterator<Item = impl 'l + StyledBlock>> {
-        use syntect::easy::HighlightLines;
-        use syntect::highlighting::Style;
-        let syntax = &self.syntax_set.syntaxes()[0];
-        let mut highlighter = HighlightLines::new(syntax, &self.theme);
-        let mut bgn_pos = 0;
-        let mut brackets = BracketSplitter::new(
-            lines,
-            pos,
-            &[
-                Color { r: 0xFF, g: 0xFF, b: 0x00, a: 0xFF },
-                Color { r: 0xFF, g: 0x00, b: 0xFF, a: 0xFF },
-                Color { r: 0x00, g: 0xFF, b: 0xFF, a: 0xFF },
-            ],
-            &Color { r: 0xFF, g: 0x00, b: 0x00, a: 0xFF },
-            &Color { r: 0x00, g: 0xFF, b: 0x00, a: 0xFF },
-        );
-        let mut bracket = brackets.next();
-        lines.split('\n').map(move |l| {
-            let iter = highlighter
-                .highlight_line(l, &self.syntax_set)
-                .unwrap_or(vec![(Style::default(), l)])
-                .into_iter()
-                .flat_map(|(mut s, token)| {
-                    s.background.a = 0;
-                    let end_pos = bgn_pos + token.len();
-                    let mut v = Vec::new();
-                    while let Some((bracket_pos, (color_fb, color_bg))) = bracket {
-                        if bgn_pos <= bracket_pos && end_pos > bracket_pos {
-                            let shifted_pos = bracket_pos - bgn_pos;
-                            v.push((s, &token[0..shifted_pos]));
-                            v.push((
-                                {
-                                    let mut _s = s;
-                                    _s.foreground = *color_fb;
-                                    if let Some(color_bg) = color_bg {
-                                        _s.background = *color_bg;
-                                    }
-                                    _s
-                                },
-                                &token[shifted_pos..=shifted_pos],
-                            ));
-                            bgn_pos = bracket_pos + 1;
-                            bracket = brackets.next();
-                        } else {
-                            break;
-                        }
+    fn highlight_line<'l>(
+        &mut self,
+        line: &'l str,
+        _pos: usize,
+    ) -> impl Iterator<Item = impl 'l + StyledBlock> {
+        let (left_bracket_num, right_bracket_num) =
+            self.parsed
+                .tokens()
+                .iter()
+                .fold((0, 0), |(acc_l, acc_r), token| match token.kind() {
+                    TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => {
+                        (acc_l + 1, acc_r)
                     }
-                    v.push((s, &lines[bgn_pos..end_pos]));
-                    bgn_pos = end_pos;
-                    v.into_iter()
-                })
-                .collect::<Vec<_>>();
-            bgn_pos += 1;
-            iter.into_iter()
+                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => {
+                        (acc_l, acc_r + 1)
+                    }
+                    _ => (acc_l, acc_r),
+                });
+        let mut last_end = 0;
+        let mut bracket_level: i32 = 0;
+        let mut last_kind = TokenKind::Name;
+        let tokens = self.parsed.tokens();
+        self.need_render = false;
+        tokens.iter().enumerate().flat_map(move |(idx, token)| {
+            let (kind, range) = token.as_tuple();
+            let term = match kind {
+                TokenKind::Newline | TokenKind::NonLogicalNewline => {
+                    if range.len().to_u32() == 0 {
+                        ""
+                    } else {
+                        PROMPT2_OK
+                    }
+                }
+                _ => &line[range],
+            };
+            let style = match kind {
+                TokenKind::Name => match last_kind {
+                    // function
+                    TokenKind::Def => Style::new().fg_color(Some(FUNCTION_COLOR)),
+                    TokenKind::Class => Style::new().fg_color(Some(CLASS_COLOR)),
+                    _ => match term {
+                        "self" | "super" => Style::new().fg_color(Some(KEY1_COLOR)),
+                        _ => {
+                            if term.chars().all(|c| c.is_ascii_uppercase()) {
+                                Style::new().fg_color(Some(KEY1_COLOR))
+                            } else {
+                                if let Some(next_token) = tokens.get(idx + 1) {
+                                    match next_token.kind() {
+                                        TokenKind::Lpar
+                                        | TokenKind::Lsqb
+                                        | TokenKind::Lbrace => {
+                                            Style::new().fg_color(Some(FUNCTION_COLOR))
+                                        }
+                                        _ => Style::new().fg_color(Some(BLANK_COLOR)),
+                                    }
+                                } else {
+                                    Style::new().fg_color(Some(BLANK_COLOR))
+                                }
+                            }
+                        }
+                    },
+                },
+                TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => {
+                    let style = Style::new().fg_color(Some(
+                        if left_bracket_num - right_bracket_num <= bracket_level + 1 {
+                            TryInto::<usize>::try_into(bracket_level)
+                                .map_or(UNKNOWN_COLOR, |level| {
+                                    BRACKET_COLORS[level % BRACKET_COLORS.len()]
+                                })
+                        } else {
+                            UNKNOWN_COLOR
+                        },
+                    ));
+                    bracket_level += 1;
+                    style
+                }
+                TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => {
+                    bracket_level -= 1;
+                    let style = Style::new().fg_color(Some(
+                        TryInto::<usize>::try_into(bracket_level)
+                            .map_or(UNKNOWN_COLOR, |level| {
+                                BRACKET_COLORS[level % BRACKET_COLORS.len()]
+                            }),
+                    ));
+                    style
+                }
+                TokenKind::From
+                | TokenKind::Import
+                | TokenKind::Def
+                | TokenKind::Class
+                | TokenKind::Equal
+                | TokenKind::EqEqual
+                | TokenKind::NotEqual
+                | TokenKind::LessEqual
+                | TokenKind::GreaterEqual
+                | TokenKind::DoubleStarEqual
+                | TokenKind::PlusEqual
+                | TokenKind::MinusEqual
+                | TokenKind::StarEqual
+                | TokenKind::SlashEqual
+                | TokenKind::PercentEqual
+                | TokenKind::AmperEqual
+                | TokenKind::VbarEqual
+                | TokenKind::CircumflexEqual
+                | TokenKind::LeftShiftEqual
+                | TokenKind::RightShiftEqual
+                | TokenKind::DoubleSlash
+                | TokenKind::DoubleSlashEqual
+                | TokenKind::ColonEqual
+                | TokenKind::At
+                | TokenKind::AtEqual
+                | TokenKind::Elif
+                | TokenKind::Else
+                | TokenKind::For
+                | TokenKind::If
+                | TokenKind::In
+                | TokenKind::FStringStart
+                | TokenKind::FStringMiddle
+                | TokenKind::FStringEnd
+                | TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Vbar
+                | TokenKind::Amper
+                | TokenKind::Less
+                | TokenKind::Greater
+                | TokenKind::Percent
+                | TokenKind::Tilde
+                | TokenKind::CircumFlex
+                | TokenKind::LeftShift
+                | TokenKind::RightShift
+                | TokenKind::Dot
+                | TokenKind::DoubleStar
+                | TokenKind::As
+                | TokenKind::Assert
+                | TokenKind::Async
+                | TokenKind::Await
+                | TokenKind::Break
+                | TokenKind::Continue
+                | TokenKind::Del
+                | TokenKind::Except
+                | TokenKind::Global
+                | TokenKind::Is
+                | TokenKind::Lambda
+                | TokenKind::Finally
+                | TokenKind::Nonlocal
+                | TokenKind::Not
+                | TokenKind::Pass
+                | TokenKind::Raise
+                | TokenKind::Return
+                | TokenKind::Try
+                | TokenKind::While
+                | TokenKind::With
+                | TokenKind::Yield
+                | TokenKind::Case
+                | TokenKind::And
+                | TokenKind::Or
+                | TokenKind::Match => Style::new().fg_color(Some(KEY2_COLOR)),
+                TokenKind::String => Style::new().fg_color(Some(STRING_COLOR)),
+                TokenKind::Int
+                | TokenKind::Float
+                | TokenKind::Complex
+                | TokenKind::Ellipsis
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::None
+                | TokenKind::Type => Style::new().fg_color(Some(KEY1_COLOR)),
+                TokenKind::Comment => Style::new().fg_color(Some(COMMENT_COLOR)).italic(),
+                TokenKind::Comma
+                | TokenKind::Unknown
+                | TokenKind::IpyEscapeCommand
+                | TokenKind::Exclamation
+                | TokenKind::Colon => Style::new().fg_color(Some(BLANK_COLOR)),
+                TokenKind::Indent
+                | TokenKind::Dedent
+                | TokenKind::Newline
+                | TokenKind::NonLogicalNewline
+                | TokenKind::EndOfFile => Style::new(),
+                TokenKind::Semi | TokenKind::Question | TokenKind::Rarrow => {
+                    Style::new().fg_color(Some(SYMBOL_COLOR)).italic()
+                }
+            };
+            last_kind = kind;
+            let out =
+                core::iter::once((style, &line[last_end..range.start().to_usize()]))
+                    .chain(core::iter::once((style, term)));
+            last_end = range.end().to_usize();
+            out
         })
     }
     #[inline]
-    fn continuation_prompt<'b, 's: 'b, 'p: 'b>(
-        &'s self,
-        _prompt: &'p str,
-        default: bool,
-    ) -> Cow<'b, str> {
-        if default {
-            Borrowed(PROMPT2_OK)
-        } else {
-            Borrowed(PROMPT2)
-        }
-    }
-    #[inline]
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
-        &'s self,
+        &'s mut self,
         prompt: &'p str,
         default: bool,
     ) -> Cow<'b, str> {
         if default {
-            match (self.state.continuation, self.state.on_error) {
-                (true, true) => Borrowed(PROMPT2_OK),
-                (true, false) => Borrowed(PROMPT2_OK),
-                (false, true) => Borrowed(PROMPT1_ERR),
-                (false, false) => Borrowed(PROMPT1_OK),
+            if self.on_error {
+                Borrowed(PROMPT1_ERR)
+            } else {
+                Borrowed(PROMPT1_OK)
             }
         } else {
             Borrowed(prompt)
         }
     }
     #[inline]
-    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+    fn highlight_hint<'h>(&mut self, hint: &'h str) -> Cow<'h, str> {
         Owned(format!("\x1b[90m{hint}\x1b[0m"))
     }
 }
 
 #[inline]
 fn run_shell() -> Result<(), ExecErr> {
-    let mut rl = Editor::<MyHelper, DefaultHistory>::new()?;
-    rl.set_helper(Some(MyHelper::new()));
+    let mut rl = Editor::<MyHelper, DefaultHistory>::new(MyHelper::new())?;
+    rl.set_auto_add_history(true);
     rl.bind_sequence(
         KeyEvent(KeyCode::Tab, Modifiers::NONE),
         EventHandler::Simple(Cmd::Indent(Movement::ForwardChar(4))),
@@ -380,57 +410,31 @@ fn run_shell() -> Result<(), ExecErr> {
         KeyEvent(KeyCode::Char('s'), Modifiers::CTRL),
         EventHandler::Simple(Cmd::Newline),
     );
-    let mut code = String::new();
-    let mut prompt = PROMPT1;
     let mut terminate_count: u8 = 0;
     Python::with_gil(|py| {
         py::init(py)?;
-        let compile_command =
-            PyModule::import_bound(py, "codeop")?.getattr("compile_command")?;
         loop {
-            let readline = rl.readline(prompt);
+            let readline = rl.readline(PROMPT1);
             match readline {
-                Ok(line) => {
-                    match line.as_str() {
-                        "clear" => {
+                Ok(input) => {
+                    match input.trim() {
+                        "clear()" => {
                             rl.clear_screen()?;
-                            if let Some(helper) = rl.helper_mut() {
-                                helper.state.on_error = false;
-                            }
+                            rl.helper_mut().on_error = false;
                             continue;
                         }
-                        "exit" => {
+                        "exit()" => {
                             println!("\nExiting...");
                             return Ok(());
                         }
                         _ => (),
                     }
                     terminate_count = 0;
-                    if !code.is_empty() {
-                        code += "\n";
-                    }
-                    code += &line;
-                    let (continuation, on_error) = if let Ok(true) =
-                        py::is_incomplete_code(&compile_command, &code)
-                    {
-                        prompt = PROMPT1;
-                        (true, None)
+                    if let Err(e) = py.run_bound(&input, None, None) {
+                        println!("{}", e);
+                        rl.helper_mut().on_error = true;
                     } else {
-                        prompt = PROMPT2;
-                        if let Err(e) = py.run_bound(&code, None, None) {
-                            println!("{}", e);
-                            rl.add_history_entry(mem::take(&mut code))?;
-                            (false, Some(true))
-                        } else {
-                            rl.add_history_entry(mem::take(&mut code))?;
-                            (false, Some(false))
-                        }
-                    };
-                    if let Some(helper) = rl.helper_mut() {
-                        helper.state.continuation = continuation;
-                        if let Some(on_error) = on_error {
-                            helper.state.on_error = on_error;
-                        }
+                        rl.helper_mut().on_error = false;
                     }
                 }
                 Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
