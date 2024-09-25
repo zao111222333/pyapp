@@ -6,8 +6,8 @@ edition = "2021"
 # rustyline = { path = "../rustyline", features = ["custom-bindings", "split-highlight", "anstyle", "continuation-prompt"]}
 rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "highlight", features = ["custom-bindings", "split-highlight", "anstyle", "continuation-prompt"]}
 # rustyline = { git = "https://github.com/gwenn/rustyline.git", branch = "highlight", features = ["custom-bindings", "derive", "split-highlight", "anstyle"]}
-ruff_python_parser = { git = "https://github.com/zao111222333/ruff.git" }
 # ruff_python_parser = { git = "https://github.com/astral-sh/ruff.git" }
+ruff_python_parser = { git = "https://github.com/zao111222333/ruff.git" }
 # ruff_python_parser = { path = "../ruff/crates/ruff_python_parser" }
 
 [dependencies]

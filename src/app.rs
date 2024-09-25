@@ -8,7 +8,9 @@ use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyModule},
     PyErr, Python,
 };
-use ruff_python_parser::{LexicalErrorType, ParseErrorType, TokenKind};
+use ruff_python_parser::{
+    LexicalErrorType, ParseError, ParseErrorType, Token, TokenKind,
+};
 use rustyline::{
     completion::Completer,
     config::Configurer,
@@ -93,9 +95,9 @@ impl std::process::Termination for ExitCode {
 
 // #[derive(Completer, Helper, Hinter, Validator)]
 struct MyHelper {
-    // #[rustyline(Hinter)]
-    // hinter: HistoryHinter,
-    parsed: ruff_python_parser::Parsed<ruff_python_parser::Mod>,
+    tokens: Vec<Token>,
+    errors: Vec<ParseError>,
+    bracket_level_diff: i32,
     need_render: bool,
     on_error: bool,
 }
@@ -105,9 +107,9 @@ impl Validator for MyHelper {
         &mut self,
         _ctx: &mut ValidationContext,
     ) -> rustyline::Result<ValidationResult> {
-        let mut indent = 0;
+        let mut indent = self.bracket_level_diff.try_into().unwrap_or(0);
         let mut incomplete = false;
-        let mut tokens_rev = self.parsed.tokens().iter().rev();
+        let mut tokens_rev = self.tokens.iter().rev();
         while let Some(token) = tokens_rev.next() {
             let (kind, range) = token.as_tuple();
             match kind {
@@ -124,7 +126,7 @@ impl Validator for MyHelper {
                 _ => break,
             }
         }
-        for error in self.parsed.errors() {
+        for error in &self.errors {
             match &error.error {
                 ParseErrorType::OtherError(s) => {
                     if s.starts_with("Expected an indented") {
@@ -159,7 +161,15 @@ impl Hinter for MyHelper {
 impl Helper for MyHelper {
     fn update_after_edit(&mut self, line: &str, _pos: usize, _forced_refresh: bool) {
         use ruff_python_parser::{parse_unchecked, Mode};
-        self.parsed = parse_unchecked(line, Mode::Module);
+        let (_, tokens, errors) = parse_unchecked(line, Mode::Module).into_tuple();
+        self.bracket_level_diff =
+            tokens.iter().fold(0, |level, token| match token.kind() {
+                TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => level + 1,
+                TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => level - 1,
+                _ => level,
+            });
+        self.tokens = tokens.into();
+        self.errors = errors;
         self.need_render = true;
     }
 }
@@ -168,10 +178,11 @@ impl MyHelper {
     #[inline]
     fn new() -> Self {
         Self {
-            // hinter: HistoryHinter::new(),
-            parsed: Default::default(),
             on_error: false,
             need_render: true,
+            bracket_level_diff: 0,
+            tokens: Vec::new(),
+            errors: Vec::new(),
         }
     }
 }
@@ -186,20 +197,12 @@ impl Highlighter for MyHelper {
         line: &'l str,
         _pos: usize,
     ) -> impl Iterator<Item = impl 'l + StyledBlock> {
-        let bracket_level_diff =
-            self.parsed
-                .tokens()
-                .iter()
-                .fold(0, |level, token| match token.kind() {
-                    TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => level + 1,
-                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => level - 1,
-                    _ => level,
-                });
+        self.need_render = false;
+        let tokens = &self.tokens;
+        let bracket_level_diff = self.bracket_level_diff;
         let mut last_end = 0;
         let mut bracket_level: i32 = 0;
         let mut last_kind = TokenKind::Name;
-        let tokens = self.parsed.tokens();
-        self.need_render = false;
         tokens.iter().enumerate().flat_map(move |(idx, token)| {
             let (kind, range) = token.as_tuple();
             let term = match kind {
