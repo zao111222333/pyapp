@@ -186,18 +186,14 @@ impl Highlighter for MyHelper {
         line: &'l str,
         _pos: usize,
     ) -> impl Iterator<Item = impl 'l + StyledBlock> {
-        let (left_bracket_num, right_bracket_num) =
+        let bracket_level_diff =
             self.parsed
                 .tokens()
                 .iter()
-                .fold((0, 0), |(acc_l, acc_r), token| match token.kind() {
-                    TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => {
-                        (acc_l + 1, acc_r)
-                    }
-                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => {
-                        (acc_l, acc_r + 1)
-                    }
-                    _ => (acc_l, acc_r),
+                .fold(0, |level, token| match token.kind() {
+                    TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => level + 1,
+                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => level - 1,
+                    _ => level,
                 });
         let mut last_end = 0;
         let mut bracket_level: i32 = 0;
@@ -245,7 +241,7 @@ impl Highlighter for MyHelper {
                 },
                 TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => {
                     let style = Style::new().fg_color(Some(
-                        if left_bracket_num - right_bracket_num <= bracket_level + 1 {
+                        if bracket_level_diff <= bracket_level + 1 {
                             TryInto::<usize>::try_into(bracket_level)
                                 .map_or(UNKNOWN_COLOR, |level| {
                                     BRACKET_COLORS[level % BRACKET_COLORS.len()]
