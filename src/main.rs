@@ -17,7 +17,7 @@ const KEY1_COLOR: Color = Color::Rgb(RgbColor(0x6C, 0xB6, 0xFF));
 const KEY2_COLOR: Color = Color::Rgb(RgbColor(0xF4, 0x70, 0x67));
 const SYMBOL_COLOR: Color = Color::Rgb(RgbColor(0xFF, 0x93, 0x8A));
 const COMMENT_COLOR: Color = Color::Rgb(RgbColor(0x76, 0x83, 0x90));
-const STRING_COLOR: Color = Color::Rgb(RgbColor(0x96, 0xD0, 0xFF));
+const STRING_COLOR: Color = Color::Rgb(RgbColor(0xA5, 0xD6, 0xFF));
 const UNKNOWN_COLOR: Color = Color::Rgb(RgbColor(0xFF, 0x00, 0x00));
 const BRACKET_COLORS: [Color; 3] = [
     Color::Rgb(RgbColor(0xFF, 0xFF, 0x00)),

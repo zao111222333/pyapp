@@ -297,9 +297,6 @@ impl Highlighter for MyHelper {
                 | TokenKind::For
                 | TokenKind::If
                 | TokenKind::In
-                | TokenKind::FStringStart
-                | TokenKind::FStringMiddle
-                | TokenKind::FStringEnd
                 | TokenKind::Plus
                 | TokenKind::Minus
                 | TokenKind::Star
@@ -340,7 +337,10 @@ impl Highlighter for MyHelper {
                 | TokenKind::And
                 | TokenKind::Or
                 | TokenKind::Match => Style::new().fg_color(Some(KEY2_COLOR)),
-                TokenKind::String => Style::new().fg_color(Some(STRING_COLOR)),
+                TokenKind::String
+                | TokenKind::FStringStart
+                | TokenKind::FStringMiddle
+                | TokenKind::FStringEnd => Style::new().fg_color(Some(STRING_COLOR)),
                 TokenKind::Int
                 | TokenKind::Float
                 | TokenKind::Complex
