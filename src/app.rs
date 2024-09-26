@@ -8,9 +8,8 @@ use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyModule},
     PyErr, Python,
 };
-use ruff_python_parser::{
-    LexicalErrorType, ParseError, ParseErrorType, Token, TokenKind,
-};
+use ruff_python_ast::Mod;
+use ruff_python_parser::{LexicalErrorType, ParseErrorType, Parsed, TokenKind};
 use rustyline::{
     completion::Completer,
     config::Configurer,
@@ -93,13 +92,41 @@ impl std::process::Termination for ExitCode {
     }
 }
 
-// #[derive(Completer, Helper, Hinter, Validator)]
 struct MyHelper {
-    tokens: Vec<Token>,
-    errors: Vec<ParseError>,
+    parsed: Parsed<Mod>,
     bracket_level_diff: i32,
     need_render: bool,
     on_error: bool,
+}
+
+impl MyHelper {
+    #[inline]
+    fn new() -> Self {
+        use ruff_python_parser::{parse_unchecked, Mode};
+        Self {
+            parsed: parse_unchecked("", Mode::Module),
+            on_error: false,
+            need_render: true,
+            bracket_level_diff: 0,
+        }
+    }
+}
+
+impl Helper for MyHelper {
+    fn update_after_edit(&mut self, line: &str, _pos: usize, _forced_refresh: bool) {
+        use ruff_python_parser::{parse_unchecked, Mode};
+        self.parsed = parse_unchecked(line, Mode::Module);
+        self.bracket_level_diff =
+            self.parsed
+                .tokens()
+                .iter()
+                .fold(0, |level, token| match token.kind() {
+                    TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => level + 1,
+                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => level - 1,
+                    _ => level,
+                });
+        self.need_render = true;
+    }
 }
 
 impl Validator for MyHelper {
@@ -109,7 +136,7 @@ impl Validator for MyHelper {
     ) -> rustyline::Result<ValidationResult> {
         let mut indent = self.bracket_level_diff.try_into().unwrap_or(0);
         let mut incomplete = false;
-        let mut tokens_rev = self.tokens.iter().rev();
+        let mut tokens_rev = self.parsed.tokens().iter().rev();
         while let Some(token) = tokens_rev.next() {
             let (kind, range) = token.as_tuple();
             match kind {
@@ -126,7 +153,7 @@ impl Validator for MyHelper {
                 _ => break,
             }
         }
-        for error in &self.errors {
+        for error in self.parsed.errors() {
             match &error.error {
                 ParseErrorType::OtherError(s) => {
                     if s.starts_with("Expected an indented") {
@@ -158,35 +185,6 @@ impl Hinter for MyHelper {
     type Hint = String;
 }
 
-impl Helper for MyHelper {
-    fn update_after_edit(&mut self, line: &str, _pos: usize, _forced_refresh: bool) {
-        use ruff_python_parser::{parse_unchecked, Mode};
-        let (_, tokens, errors) = parse_unchecked(line, Mode::Module).into_tuple();
-        self.bracket_level_diff =
-            tokens.iter().fold(0, |level, token| match token.kind() {
-                TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => level + 1,
-                TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => level - 1,
-                _ => level,
-            });
-        self.tokens = tokens.into();
-        self.errors = errors;
-        self.need_render = true;
-    }
-}
-
-impl MyHelper {
-    #[inline]
-    fn new() -> Self {
-        Self {
-            on_error: false,
-            need_render: true,
-            bracket_level_diff: 0,
-            tokens: Vec::new(),
-            errors: Vec::new(),
-        }
-    }
-}
-
 impl Highlighter for MyHelper {
     fn highlight_char(&mut self, _line: &str, _pos: usize, _forced: bool) -> bool {
         self.need_render
@@ -198,178 +196,180 @@ impl Highlighter for MyHelper {
         _pos: usize,
     ) -> impl Iterator<Item = impl 'l + StyledBlock> {
         self.need_render = false;
-        let tokens = &self.tokens;
+        let tokens = self.parsed.tokens();
         let bracket_level_diff = self.bracket_level_diff;
         let mut last_end = 0;
         let mut bracket_level: i32 = 0;
         let mut last_kind = TokenKind::Name;
-        tokens.iter().enumerate().flat_map(move |(idx, token)| {
-            let (kind, range) = token.as_tuple();
-            let term = match kind {
-                TokenKind::Newline | TokenKind::NonLogicalNewline => {
-                    if range.len().to_u32() == 0 {
-                        ""
-                    } else {
-                        PROMPT2_OK
-                    }
+        tokens
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, token)| {
+                let (kind, range) = token.as_tuple();
+                if range.len().to_u32() == 0 {
+                    None
+                } else {
+                    Some((idx, kind, range))
                 }
-                _ => &line[range],
-            };
-            let style = match kind {
-                TokenKind::Name => match last_kind {
-                    // function
-                    TokenKind::Def => Style::new().fg_color(Some(FUNCTION_COLOR)),
-                    TokenKind::Class => Style::new().fg_color(Some(CLASS_COLOR)),
-                    _ => match term {
-                        "self" | "super" => Style::new().fg_color(Some(KEY1_COLOR)),
-                        _ => {
-                            if term.chars().all(|c| c.is_ascii_uppercase()) {
-                                Style::new().fg_color(Some(KEY1_COLOR))
-                            } else {
-                                if let Some(next_token) = tokens.get(idx + 1) {
-                                    match next_token.kind() {
-                                        TokenKind::Lpar
-                                        | TokenKind::Lsqb
-                                        | TokenKind::Lbrace => {
-                                            Style::new().fg_color(Some(FUNCTION_COLOR))
-                                        }
-                                        _ => Style::new().fg_color(Some(BLANK_COLOR)),
-                                    }
+            })
+            .flat_map(move |(idx, kind, range)| {
+                let term = match kind {
+                    TokenKind::Newline | TokenKind::NonLogicalNewline => PROMPT2_OK,
+                    _ => &line[range],
+                };
+                let style = match kind {
+                    TokenKind::Name => match last_kind {
+                        TokenKind::Def => Style::new().fg_color(Some(FUNCTION_COLOR)),
+                        TokenKind::Class => Style::new().fg_color(Some(CLASS_COLOR)),
+                        _ => match term {
+                            "self" | "super" => Style::new().fg_color(Some(KEY1_COLOR)),
+                            _ => {
+                                if term.chars().all(|c| c.is_ascii_uppercase()) {
+                                    Style::new().fg_color(Some(KEY1_COLOR))
                                 } else {
-                                    Style::new().fg_color(Some(BLANK_COLOR))
+                                    if let Some(next_token) = tokens.get(idx + 1) {
+                                        match next_token.kind() {
+                                            TokenKind::Lpar => Style::new()
+                                                .fg_color(Some(FUNCTION_COLOR)),
+                                            _ => Style::new().fg_color(Some(BLANK_COLOR)),
+                                        }
+                                    } else {
+                                        Style::new().fg_color(Some(BLANK_COLOR))
+                                    }
                                 }
                             }
-                        }
+                        },
                     },
-                },
-                TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => {
-                    let style = Style::new().fg_color(Some(
-                        if bracket_level_diff <= bracket_level + 1 {
+                    TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => {
+                        let style = Style::new().fg_color(Some(
+                            if bracket_level_diff <= bracket_level + 1 {
+                                TryInto::<usize>::try_into(bracket_level)
+                                    .map_or(UNKNOWN_COLOR, |level| {
+                                        BRACKET_COLORS[level % BRACKET_COLORS.len()]
+                                    })
+                            } else {
+                                UNKNOWN_COLOR
+                            },
+                        ));
+                        bracket_level += 1;
+                        style
+                    }
+                    TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => {
+                        bracket_level -= 1;
+                        let style = Style::new().fg_color(Some(
                             TryInto::<usize>::try_into(bracket_level)
                                 .map_or(UNKNOWN_COLOR, |level| {
                                     BRACKET_COLORS[level % BRACKET_COLORS.len()]
-                                })
-                        } else {
-                            UNKNOWN_COLOR
-                        },
-                    ));
-                    bracket_level += 1;
-                    style
-                }
-                TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => {
-                    bracket_level -= 1;
-                    let style = Style::new().fg_color(Some(
-                        TryInto::<usize>::try_into(bracket_level)
-                            .map_or(UNKNOWN_COLOR, |level| {
-                                BRACKET_COLORS[level % BRACKET_COLORS.len()]
-                            }),
-                    ));
-                    style
-                }
-                TokenKind::From
-                | TokenKind::Import
-                | TokenKind::Def
-                | TokenKind::Class
-                | TokenKind::Equal
-                | TokenKind::EqEqual
-                | TokenKind::NotEqual
-                | TokenKind::LessEqual
-                | TokenKind::GreaterEqual
-                | TokenKind::DoubleStarEqual
-                | TokenKind::PlusEqual
-                | TokenKind::MinusEqual
-                | TokenKind::StarEqual
-                | TokenKind::SlashEqual
-                | TokenKind::PercentEqual
-                | TokenKind::AmperEqual
-                | TokenKind::VbarEqual
-                | TokenKind::CircumflexEqual
-                | TokenKind::LeftShiftEqual
-                | TokenKind::RightShiftEqual
-                | TokenKind::DoubleSlash
-                | TokenKind::DoubleSlashEqual
-                | TokenKind::ColonEqual
-                | TokenKind::At
-                | TokenKind::AtEqual
-                | TokenKind::Elif
-                | TokenKind::Else
-                | TokenKind::For
-                | TokenKind::If
-                | TokenKind::In
-                | TokenKind::Plus
-                | TokenKind::Minus
-                | TokenKind::Star
-                | TokenKind::Slash
-                | TokenKind::Vbar
-                | TokenKind::Amper
-                | TokenKind::Less
-                | TokenKind::Greater
-                | TokenKind::Percent
-                | TokenKind::Tilde
-                | TokenKind::CircumFlex
-                | TokenKind::LeftShift
-                | TokenKind::RightShift
-                | TokenKind::Dot
-                | TokenKind::DoubleStar
-                | TokenKind::As
-                | TokenKind::Assert
-                | TokenKind::Async
-                | TokenKind::Await
-                | TokenKind::Break
-                | TokenKind::Continue
-                | TokenKind::Del
-                | TokenKind::Except
-                | TokenKind::Global
-                | TokenKind::Is
-                | TokenKind::Lambda
-                | TokenKind::Finally
-                | TokenKind::Nonlocal
-                | TokenKind::Not
-                | TokenKind::Pass
-                | TokenKind::Raise
-                | TokenKind::Return
-                | TokenKind::Try
-                | TokenKind::While
-                | TokenKind::With
-                | TokenKind::Yield
-                | TokenKind::Case
-                | TokenKind::And
-                | TokenKind::Or
-                | TokenKind::Match => Style::new().fg_color(Some(KEY2_COLOR)),
-                TokenKind::String
-                | TokenKind::FStringStart
-                | TokenKind::FStringMiddle
-                | TokenKind::FStringEnd => Style::new().fg_color(Some(STRING_COLOR)),
-                TokenKind::Int
-                | TokenKind::Float
-                | TokenKind::Complex
-                | TokenKind::Ellipsis
-                | TokenKind::True
-                | TokenKind::False
-                | TokenKind::None
-                | TokenKind::Type => Style::new().fg_color(Some(KEY1_COLOR)),
-                TokenKind::Comment => Style::new().fg_color(Some(COMMENT_COLOR)).italic(),
-                TokenKind::Comma
-                | TokenKind::Unknown
-                | TokenKind::IpyEscapeCommand
-                | TokenKind::Exclamation
-                | TokenKind::Colon => Style::new().fg_color(Some(BLANK_COLOR)),
-                TokenKind::Indent
-                | TokenKind::Dedent
-                | TokenKind::Newline
-                | TokenKind::NonLogicalNewline
-                | TokenKind::EndOfFile => Style::new(),
-                TokenKind::Semi | TokenKind::Question | TokenKind::Rarrow => {
-                    Style::new().fg_color(Some(SYMBOL_COLOR)).italic()
-                }
-            };
-            last_kind = kind;
-            let out =
-                core::iter::once((style, &line[last_end..range.start().to_usize()]))
-                    .chain(core::iter::once((style, term)));
-            last_end = range.end().to_usize();
-            out
-        })
+                                }),
+                        ));
+                        style
+                    }
+                    TokenKind::From
+                    | TokenKind::Import
+                    | TokenKind::Def
+                    | TokenKind::Class
+                    | TokenKind::Equal
+                    | TokenKind::EqEqual
+                    | TokenKind::NotEqual
+                    | TokenKind::LessEqual
+                    | TokenKind::GreaterEqual
+                    | TokenKind::DoubleStarEqual
+                    | TokenKind::PlusEqual
+                    | TokenKind::MinusEqual
+                    | TokenKind::StarEqual
+                    | TokenKind::SlashEqual
+                    | TokenKind::PercentEqual
+                    | TokenKind::AmperEqual
+                    | TokenKind::VbarEqual
+                    | TokenKind::CircumflexEqual
+                    | TokenKind::LeftShiftEqual
+                    | TokenKind::RightShiftEqual
+                    | TokenKind::DoubleSlash
+                    | TokenKind::DoubleSlashEqual
+                    | TokenKind::ColonEqual
+                    | TokenKind::At
+                    | TokenKind::AtEqual
+                    | TokenKind::Elif
+                    | TokenKind::Else
+                    | TokenKind::For
+                    | TokenKind::If
+                    | TokenKind::In
+                    | TokenKind::Plus
+                    | TokenKind::Minus
+                    | TokenKind::Star
+                    | TokenKind::Slash
+                    | TokenKind::Vbar
+                    | TokenKind::Amper
+                    | TokenKind::Less
+                    | TokenKind::Greater
+                    | TokenKind::Percent
+                    | TokenKind::Tilde
+                    | TokenKind::CircumFlex
+                    | TokenKind::LeftShift
+                    | TokenKind::RightShift
+                    | TokenKind::Dot
+                    | TokenKind::DoubleStar
+                    | TokenKind::As
+                    | TokenKind::Assert
+                    | TokenKind::Async
+                    | TokenKind::Await
+                    | TokenKind::Break
+                    | TokenKind::Continue
+                    | TokenKind::Del
+                    | TokenKind::Except
+                    | TokenKind::Global
+                    | TokenKind::Is
+                    | TokenKind::Lambda
+                    | TokenKind::Finally
+                    | TokenKind::Nonlocal
+                    | TokenKind::Not
+                    | TokenKind::Pass
+                    | TokenKind::Raise
+                    | TokenKind::Return
+                    | TokenKind::Try
+                    | TokenKind::While
+                    | TokenKind::With
+                    | TokenKind::Yield
+                    | TokenKind::Case
+                    | TokenKind::And
+                    | TokenKind::Or
+                    | TokenKind::Match => Style::new().fg_color(Some(KEY2_COLOR)),
+                    TokenKind::String
+                    | TokenKind::FStringStart
+                    | TokenKind::FStringMiddle
+                    | TokenKind::FStringEnd => Style::new().fg_color(Some(STRING_COLOR)),
+                    TokenKind::Int
+                    | TokenKind::Float
+                    | TokenKind::Complex
+                    | TokenKind::Ellipsis
+                    | TokenKind::True
+                    | TokenKind::False
+                    | TokenKind::None
+                    | TokenKind::Type => Style::new().fg_color(Some(KEY1_COLOR)),
+                    TokenKind::Comment => {
+                        Style::new().fg_color(Some(COMMENT_COLOR)).italic()
+                    }
+                    TokenKind::Comma
+                    | TokenKind::Unknown
+                    | TokenKind::IpyEscapeCommand
+                    | TokenKind::Exclamation
+                    | TokenKind::Colon => Style::new().fg_color(Some(BLANK_COLOR)),
+                    TokenKind::Indent
+                    | TokenKind::Dedent
+                    | TokenKind::Newline
+                    | TokenKind::NonLogicalNewline
+                    | TokenKind::EndOfFile => Style::new(),
+                    TokenKind::Semi | TokenKind::Question | TokenKind::Rarrow => {
+                        Style::new().fg_color(Some(SYMBOL_COLOR)).italic()
+                    }
+                };
+                last_kind = kind;
+                let out =
+                    core::iter::once((style, &line[last_end..range.start().to_usize()]))
+                        .chain(core::iter::once((style, term)));
+                last_end = range.end().to_usize();
+                out
+            })
     }
     #[inline]
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
