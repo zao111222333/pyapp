@@ -10,6 +10,7 @@ use pyo3::{
 };
 use ruff_python_ast::Mod;
 use ruff_python_parser::{LexicalErrorType, ParseErrorType, Parsed, TokenKind};
+use ruff_text_size::TextRange;
 use rustyline::{
     completion::Completer,
     config::Configurer,
@@ -24,6 +25,7 @@ use std::{
     borrow::Cow::{self, Borrowed, Owned},
     fs::File,
     io::{BufRead, BufReader, Read},
+    iter::once,
     path::PathBuf,
 };
 use thiserror::Error;
@@ -127,6 +129,12 @@ impl Helper for MyHelper {
                 });
         self.need_render = true;
     }
+    fn continuation_prompt_width<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        _prompt: &'p str,
+    ) -> usize {
+        8
+    }
 }
 
 impl Validator for MyHelper {
@@ -183,6 +191,33 @@ impl Completer for MyHelper {
 }
 impl Hinter for MyHelper {
     type Hint = String;
+    fn hint(
+        &mut self,
+        line: &str,
+        pos: usize,
+        ctx: &rustyline::Context<'_>,
+    ) -> Option<String> {
+        use rustyline::history::SearchDirection;
+        if line.is_empty() || pos < line.len() {
+            return None;
+        }
+        let start = if ctx.history_index() == ctx.history().len() {
+            ctx.history_index().saturating_sub(1)
+        } else {
+            ctx.history_index()
+        };
+        if let Some(sr) = ctx
+            .history()
+            .starts_with(line, start, SearchDirection::Reverse)
+            .unwrap_or(None)
+        {
+            if sr.entry == line {
+                return None;
+            }
+            return Some(sr.entry[pos..].to_owned());
+        }
+        None
+    }
 }
 
 impl Highlighter for MyHelper {
@@ -212,6 +247,11 @@ impl Highlighter for MyHelper {
                     Some((idx, kind, range))
                 }
             })
+            .chain(once((
+                0,
+                TokenKind::EndOfFile,
+                TextRange::new((line.len() as u32).into(), (line.len() as u32).into()),
+            )))
             .flat_map(move |(idx, kind, range)| {
                 let term = match kind {
                     TokenKind::Newline | TokenKind::NonLogicalNewline => PROMPT2_OK,
@@ -389,7 +429,7 @@ impl Highlighter for MyHelper {
     }
     #[inline]
     fn highlight_hint<'h>(&mut self, hint: &'h str) -> Cow<'h, str> {
-        Owned(format!("\x1b[90m{hint}\x1b[0m"))
+        Owned(format!("\x1b[90m{}\x1b[0m", hint.replace('\n', &format!("\n{PROMPT2}"))))
     }
 }
 

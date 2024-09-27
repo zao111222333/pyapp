@@ -3,8 +3,8 @@ name = "pyapp"
 version = "0.1.0"
 edition = "2021"
 [workspace.dependencies]
-# rustyline = { path = "../rustyline", features = ["custom-bindings", "split-highlight", "anstyle", "continuation-prompt"]}
-rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "highlight", features = ["custom-bindings", "split-highlight", "anstyle", "continuation-prompt"]}
+# rustyline = { path = "../rustyline", features = ["custom-bindings", "split-highlight", "anstyle"]}
+rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "highlight", features = ["custom-bindings", "split-highlight", "anstyle"]}
 # rustyline = { git = "https://github.com/gwenn/rustyline.git", branch = "highlight", features = ["custom-bindings", "derive", "split-highlight", "anstyle"]}
 
 # ruff_python_parser = { path = "../ruff/crates/ruff_python_parser" }
@@ -12,6 +12,7 @@ rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "h
 # ruff_python_ast = { git = "https://github.com/zao111222333/ruff.git" }
 ruff_python_parser = { git = "https://github.com/astral-sh/ruff.git" }
 ruff_python_ast = { git = "https://github.com/astral-sh/ruff.git" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff.git" }
 
 [dependencies]
 thiserror = "1.0"
@@ -20,4 +21,5 @@ kdam = { version = "0.5.2", features = ["rich", "spinner"] }
 rustyline = { workspace = true }
 ruff_python_parser = { workspace = true }
 ruff_python_ast = { workspace = true }
+ruff_text_size = { workspace = true }
 anstyle = "1.0.8"
