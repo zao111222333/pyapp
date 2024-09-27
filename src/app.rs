@@ -462,10 +462,6 @@ fn run_shell() -> Result<(), ExecErr> {
                             rl.helper_mut().on_error = false;
                             continue;
                         }
-                        "exit()" => {
-                            println!("\nExiting...");
-                            return Ok(());
-                        }
                         _ => (),
                     }
                     terminate_count = 0;
