@@ -1,12 +1,29 @@
+use core::sync::atomic::Ordering;
 use pyo3::{prelude::*, types::PyList};
+use std::sync::atomic::{AtomicBool, AtomicU8};
 
 const PY_FOO: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/py/utils/foo.py"));
 const PY_INIT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/py/init.py"));
 
+pub static CLEAR: AtomicBool = AtomicBool::new(false);
+pub static EXIT: AtomicBool = AtomicBool::new(false);
+pub static EXIT_CODE: AtomicU8 = AtomicU8::new(0);
+
 #[pyfunction]
 fn add_one(x: i64) -> i64 {
     x + 1
+}
+
+#[pyfunction]
+fn clear() {
+    CLEAR.store(true, Ordering::Relaxed);
+}
+
+#[pyfunction]
+fn exit(code: u8) {
+    EXIT.store(true, Ordering::Relaxed);
+    EXIT_CODE.store(code, Ordering::Relaxed);
 }
 
 #[pyfunction]
@@ -62,16 +79,11 @@ fn loading() -> PyResult<()> {
     Ok(())
 }
 
-#[pyfunction]
-fn exit(code: u8) {
-    println!("exit..");
-    std::process::exit(code.into());
-}
-
 #[pymodule]
 pub(super) fn foo(foo_module: &Bound<'_, PyModule>) -> PyResult<()> {
     foo_module.add_function(wrap_pyfunction!(add_one, foo_module)?)?;
     foo_module.add_function(wrap_pyfunction!(exit, foo_module)?)?;
+    foo_module.add_function(wrap_pyfunction!(clear, foo_module)?)?;
     foo_module.add_function(wrap_pyfunction!(loading, foo_module)?)?;
     Ok(())
 }

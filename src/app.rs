@@ -67,13 +67,22 @@ enum ExecErr {
     Readline(#[from] ReadlineError),
     #[error("io error {0}")]
     IO(#[from] std::io::Error),
+    #[error("io error {0}")]
+    Exit(u8),
 }
 
 impl std::process::Termination for ExitCode {
     #[inline]
     fn report(self) -> std::process::ExitCode {
         match self.inner {
-            Ok(()) => 0.into(),
+            Ok(()) => {
+                println!("\nExiting...");
+                0.into()
+            }
+            Err(ExecErr::Exit(code)) => {
+                println!("Exiting..");
+                code.into()
+            }
             Err(ExecErr::PyResult(e)) => {
                 println!("{}", e);
                 1.into()
@@ -435,6 +444,7 @@ impl Highlighter for MyHelper {
 
 #[inline]
 fn run_shell() -> Result<(), ExecErr> {
+    use core::sync::atomic::Ordering;
     let mut rl = Editor::<MyHelper, DefaultHistory>::new(MyHelper::new())?;
     rl.set_auto_add_history(true);
     rl.bind_sequence(
@@ -453,28 +463,32 @@ fn run_shell() -> Result<(), ExecErr> {
     Python::with_gil(|py| {
         py::init(py)?;
         loop {
+            if py::EXIT.load(Ordering::Relaxed) {
+                return Err(ExecErr::Exit(py::EXIT_CODE.load(Ordering::Relaxed)));
+            }
+            if py::CLEAR.load(Ordering::Relaxed) {
+                py::CLEAR.store(false, Ordering::Relaxed);
+                rl.clear_screen()?;
+                rl.helper_mut().on_error = false;
+            }
             let readline = rl.readline(PROMPT1);
+            rl.helper_mut().on_error = false;
             match readline {
                 Ok(input) => {
-                    match input.trim() {
-                        "clear()" => {
-                            rl.clear_screen()?;
-                            rl.helper_mut().on_error = false;
-                            continue;
-                        }
-                        _ => (),
+                    if match rl.helper().parsed.syntax() {
+                        Mod::Module(module) => module.body.is_empty(),
+                        _ => false,
+                    } {
+                        continue;
                     }
                     terminate_count = 0;
                     if let Err(e) = py.run_bound(&input, None, None) {
                         println!("{}", e);
                         rl.helper_mut().on_error = true;
-                    } else {
-                        rl.helper_mut().on_error = false;
                     }
                 }
                 Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
                     if terminate_count >= TERMINATE_N {
-                        println!("\nExiting...");
                         return Ok(());
                     }
                     println!(
