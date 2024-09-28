@@ -1,0 +1,16 @@
+# let's import a python module that impl by Rust!
+import foo
+foo.loading()
+a = foo.add_one(1)
+print(a)
+# error statue
+foo.add_one()
+# clear
+foo.clear()
+# incomplete cmd detect
+for i in range(4):
+    print(i)
+# histroy hinter
+for i 
+# exit with code
+foo.exit(1)
