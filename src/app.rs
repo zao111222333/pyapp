@@ -13,9 +13,8 @@ use ruff_python_parser::{LexicalErrorType, ParseErrorType, Parsed, TokenKind};
 use ruff_text_size::TextRange;
 use rustyline::{
     completion::Completer,
-    config::Configurer,
     error::ReadlineError,
-    highlight::{Highlighter, StyledBlock},
+    highlight::{Highlighter, Style as _, StyledBlock},
     hint::Hinter,
     history::DefaultHistory,
     validate::{ValidationContext, ValidationResult, Validator},
@@ -36,7 +35,13 @@ pub(super) fn run(args: args::Args) -> ExitCode {
     pyo3::append_to_inittab!(foo);
     pyo3::prepare_freethreaded_python();
     match args.mode {
-        args::Mode::InteractiveShell => ExitCode { inner: run_shell(), path: None },
+        args::Mode::InteractiveShell => ExitCode {
+            inner: run_shell(vec![
+                "# let's import a python module that impl by Rust!".to_owned(),
+                "import foo".to_owned(),
+            ]),
+            path: None,
+        },
         args::Mode::ExecFile(py_args) => ExitCode {
             inner: if args.flag.quiet {
                 quiet_exec_file(&py_args)
@@ -443,10 +448,10 @@ impl Highlighter for MyHelper {
 }
 
 #[inline]
-fn run_shell() -> Result<(), ExecErr> {
+fn run_shell(mut init_cmds: Vec<String>) -> Result<(), ExecErr> {
     use core::sync::atomic::Ordering;
     let mut rl = Editor::<MyHelper, DefaultHistory>::new(MyHelper::new())?;
-    rl.set_auto_add_history(true);
+    init_cmds.reverse();
     rl.bind_sequence(
         KeyEvent(KeyCode::Tab, Modifiers::NONE),
         EventHandler::Simple(Cmd::Indent(Movement::ForwardChar(4))),
@@ -471,37 +476,48 @@ fn run_shell() -> Result<(), ExecErr> {
                 rl.clear_screen()?;
                 rl.helper_mut().on_error = false;
             }
-            let readline = rl.readline(PROMPT1);
             rl.helper_mut().on_error = false;
-            match readline {
-                Ok(input) => {
-                    if match rl.helper().parsed.syntax() {
-                        Mod::Module(module) => module.body.is_empty(),
-                        _ => false,
-                    } {
+            let input = if let Some(input) = init_cmds.pop() {
+                let helper = rl.helper_mut();
+                print!("{}", helper.highlight_prompt(PROMPT1, true));
+                helper.update_after_edit(&input, 0, true);
+                for sb in helper.highlight_line(&input, 0) {
+                    let style = sb.style();
+                    print!("{}{}{}", style.start(), sb.text(), style.end());
+                }
+                print!("\n");
+                input
+            } else {
+                match rl.readline(PROMPT1) {
+                    Ok(input) => input,
+                    Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
+                        if terminate_count >= TERMINATE_N {
+                            return Ok(());
+                        }
+                        println!(
+                            "Need {} interrupt to exit..",
+                            TERMINATE_N - terminate_count
+                        );
+                        terminate_count += 1;
                         continue;
                     }
-                    terminate_count = 0;
-                    if let Err(e) = py.run_bound(&input, None, None) {
-                        println!("{}", e);
-                        rl.helper_mut().on_error = true;
+                    Err(err) => {
+                        println!("Error: {:?}", err);
+                        return Err(ExecErr::Readline(err));
                     }
                 }
-                Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
-                    if terminate_count >= TERMINATE_N {
-                        return Ok(());
-                    }
-                    println!(
-                        "Need {} interrupt to exit..",
-                        TERMINATE_N - terminate_count
-                    );
-                    terminate_count += 1;
-                }
-                Err(err) => {
-                    println!("Error: {:?}", err);
-                    return Err(ExecErr::Readline(err));
+            };
+            terminate_count = 0;
+            if match rl.helper().parsed.syntax() {
+                Mod::Module(module) => !module.body.is_empty(),
+                _ => true,
+            } {
+                if let Err(e) = py.run_bound(&input, None, None) {
+                    println!("{}", e);
+                    rl.helper_mut().on_error = true;
                 }
             }
+            rl.add_history_entry(input)?;
         }
     })
 }
@@ -631,7 +647,7 @@ mod test {
         use py::foo;
         pyo3::append_to_inittab!(foo);
         pyo3::prepare_freethreaded_python();
-        run_shell().expect("msg");
+        run_shell(vec![]).expect("msg");
     }
     #[test]
     fn test_cmd() {
