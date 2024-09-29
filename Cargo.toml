@@ -3,8 +3,8 @@ name = "pyapp"
 version = "0.1.0"
 edition = "2021"
 [workspace.dependencies]
-# rustyline = { path = "../rustyline", features = ["custom-bindings", "split-highlight", "anstyle"]}
-rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "highlight", features = ["custom-bindings", "split-highlight", "anstyle"]}
+# rustyline = { path = "../rustyline", features = ["custom-bindings"]}
+rustyline = { git = "https://github.com/zao111222333/rustyline.git", branch = "highlight", features = ["custom-bindings"]}
 # rustyline = { git = "https://github.com/gwenn/rustyline.git", branch = "highlight", features = ["custom-bindings", "derive", "split-highlight", "anstyle"]}
 
 # ruff_python_parser = { path = "../ruff/crates/ruff_python_parser" }

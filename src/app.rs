@@ -3,7 +3,7 @@ use crate::{
     KEY1_COLOR, KEY2_COLOR, PROMPT1, PROMPT1_ERR, PROMPT1_OK, PROMPT2, PROMPT2_OK,
     STRING_COLOR, SYMBOL_COLOR, TERMINATE_N, UNKNOWN_COLOR,
 };
-use anstyle::Style;
+use anstyle::{AnsiColor, Style};
 use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyModule},
     PyErr, Python,
@@ -14,17 +14,17 @@ use ruff_text_size::TextRange;
 use rustyline::{
     completion::Completer,
     error::ReadlineError,
-    highlight::{Highlighter, Style as _, StyledBlock},
+    highlight::{DisplayOnce, Highlighter, Style as _, StyledBlocks},
     hint::Hinter,
     history::DefaultHistory,
     validate::{ValidationContext, ValidationResult, Validator},
     Cmd, Editor, EventHandler, Helper, KeyCode, KeyEvent, Modifiers, Movement,
 };
 use std::{
-    borrow::Cow::{self, Borrowed, Owned},
     fs::File,
     io::{BufRead, BufReader, Read},
     iter::once,
+    marker::PhantomData,
     path::PathBuf,
 };
 use thiserror::Error;
@@ -72,7 +72,9 @@ enum ExecErr {
     Readline(#[from] ReadlineError),
     #[error("io error {0}")]
     IO(#[from] std::io::Error),
-    #[error("io error {0}")]
+    #[error("fmt error {0}")]
+    Fmt(#[from] core::fmt::Error),
+    #[error("exit with code {0}")]
     Exit(u8),
 }
 
@@ -93,6 +95,10 @@ impl std::process::Termination for ExitCode {
                 1.into()
             }
             Err(ExecErr::Readline(e)) => {
+                println!("{}", e);
+                1.into()
+            }
+            Err(ExecErr::Fmt(e)) => {
                 println!("{}", e);
                 1.into()
             }
@@ -239,18 +245,18 @@ impl Highlighter for MyHelper {
         self.need_render
     }
     #[inline]
-    fn highlight_line<'l>(
-        &mut self,
+    fn highlight<'b, 's: 'b, 'l: 'b>(
+        &'s mut self,
         line: &'l str,
         _pos: usize,
-    ) -> impl Iterator<Item = impl 'l + StyledBlock> {
+    ) -> impl 'b + DisplayOnce {
         self.need_render = false;
         let tokens = self.parsed.tokens();
         let bracket_level_diff = self.bracket_level_diff;
         let mut last_end = 0;
         let mut bracket_level: i32 = 0;
         let mut last_kind = TokenKind::Name;
-        tokens
+        let iter = tokens
             .iter()
             .enumerate()
             .filter_map(|(idx, token)| {
@@ -423,27 +429,60 @@ impl Highlighter for MyHelper {
                         .chain(core::iter::once((style, term)));
                 last_end = range.end().to_usize();
                 out
-            })
+            });
+        StyledBlocks::new(iter)
     }
     #[inline]
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
         &'s mut self,
         prompt: &'p str,
         default: bool,
-    ) -> Cow<'b, str> {
+    ) -> impl 'b + DisplayOnce {
         if default {
             if self.on_error {
-                Borrowed(PROMPT1_ERR)
+                PROMPT1_ERR
             } else {
-                Borrowed(PROMPT1_OK)
+                PROMPT1_OK
             }
         } else {
-            Borrowed(prompt)
+            prompt
         }
     }
     #[inline]
-    fn highlight_hint<'h>(&mut self, hint: &'h str) -> Cow<'h, str> {
-        Owned(format!("\x1b[90m{}\x1b[0m", hint.replace('\n', &format!("\n{PROMPT2}"))))
+    fn highlight_hint<'b, 's: 'b, 'h: 'b>(
+        &'s mut self,
+        hint: &'h str,
+    ) -> impl 'b + DisplayOnce {
+        struct Lines<'l, I>
+        where
+            I: Iterator<Item = &'l str>,
+        {
+            style: Style,
+            iter: I,
+            _marker: PhantomData<&'l ()>,
+        }
+        impl<'l, I> DisplayOnce for Lines<'l, I>
+        where
+            I: Iterator<Item = &'l str>,
+        {
+            fn fmt<W: core::fmt::Write>(self, f: &mut W) -> core::fmt::Result {
+                let mut iter = self.iter;
+                if let Some(first_line) = iter.next() {
+                    write!(f, "{}", self.style.start())?;
+                    write!(f, "{}", first_line)?;
+                    iter.map(|line| write!(f, "\n{}{}", PROMPT2, line))
+                        .collect::<core::fmt::Result>()?;
+                    write!(f, "{}", self.style.end())
+                } else {
+                    write!(f, "{}", self.style.end())
+                }
+            }
+        }
+        Lines {
+            iter: hint.split('\n'),
+            style: Style::new().fg_color(Some(AnsiColor::BrightBlack.into())),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -479,12 +518,9 @@ fn run_shell(mut init_cmds: Vec<String>) -> Result<(), ExecErr> {
             rl.helper_mut().on_error = false;
             let input = if let Some(input) = init_cmds.pop() {
                 let helper = rl.helper_mut();
-                print!("{}", helper.highlight_prompt(PROMPT1, true));
                 helper.update_after_edit(&input, 0, true);
-                for sb in helper.highlight_line(&input, 0) {
-                    let style = sb.style();
-                    print!("{}{}{}", style.start(), sb.text(), style.end());
-                }
+                DisplayOnce::print(helper.highlight_prompt(PROMPT1, true))?;
+                DisplayOnce::print(helper.highlight(&input, 0))?;
                 print!("\n");
                 input
             } else {
